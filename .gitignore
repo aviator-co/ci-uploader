@@ -1,0 +1,8 @@
+/aviator-ci
+/dist/
+*.exe
+*.test
+*.out
+.idea/
+.claude/
+.DS_Store
