@@ -2,30 +2,29 @@ package capture
 
 import (
 	"bytes"
-	"math/rand/v2"
 	"testing"
 )
 
 func TestTailKeepsTheEnd(t *testing.T) {
-	r := rand.New(rand.NewPCG(1, 2))
-	for range 200 {
-		limit := 1 + r.IntN(50)
+	var next byte
+	for limit := 1; limit <= 40; limit++ {
 		tail := NewTail(limit)
 		var all []byte
-		for range r.IntN(20) {
-			p := make([]byte, r.IntN(2*limit))
+		for _, size := range []int{0, 1, 3, limit - 1, limit, 7, limit + 1, 2 * limit, 5} {
+			p := make([]byte, max(size, 0))
 			for i := range p {
-				p[i] = byte(r.IntN(256))
+				p[i] = next
+				next++
 			}
 			all = append(all, p...)
 			if n, err := tail.Write(p); n != len(p) || err != nil {
 				t.Fatalf("Write = %d, %v", n, err)
 			}
-		}
-		got, total := tail.Bytes()
-		want := all[max(0, len(all)-limit):]
-		if !bytes.Equal(got, want) || total != int64(len(all)) {
-			t.Fatalf("limit %d: got %d bytes (total %d), want %d (total %d)", limit, len(got), total, len(want), len(all))
+			got, total := tail.Bytes()
+			want := all[max(0, len(all)-limit):]
+			if !bytes.Equal(got, want) || total != int64(len(all)) {
+				t.Fatalf("limit %d: got %v (total %d), want %v (total %d)", limit, got, total, want, len(all))
+			}
 		}
 	}
 }

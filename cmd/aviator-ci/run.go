@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/aviator-co/ci-uploader/internal/capture"
@@ -35,6 +36,7 @@ func runRun(args []string) int {
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: aviator-ci run --check <name> [flags] -- <command> [args...]\n\n")
 		fs.PrintDefaults()
+		fmt.Fprint(fs.Output(), "\nA signal to aviator-ci counts as a cancel and uploads nothing, so put a timeout\ninside it: aviator-ci run ... -- timeout 30m make test\n")
 	}
 	err := fs.Parse(flagArgs)
 	if err == nil && fs.NArg() > 0 {
@@ -49,7 +51,12 @@ func runRun(args []string) int {
 	}
 
 	tail := capture.NewTail(upload.LogTailBytes)
-	code := execute(command, tail)
+	code, stopped := execute(command, tail)
+	if stopped {
+		// The build was cancelled, not failed.
+		warnf("stopped by a signal; not uploading")
+		return code
+	}
 	if code != 0 && canUpload {
 		log, total := tail.Bytes()
 		send(t, log, total)
@@ -58,12 +65,19 @@ func runRun(args []string) int {
 }
 
 // execute runs command with stdout and stderr streamed through and copied into
-// tail, and returns its exit code.
-func execute(command []string, tail io.Writer) int {
+// tail. It returns the exit code, and whether aviator-ci was signalled to stop.
+func execute(command []string, tail io.Writer) (int, bool) {
 	cmd := exec.Command(command[0], command[1:]...) //nolint:gosec,noctx // runs the user's own command, for as long as it takes
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = io.MultiWriter(os.Stdout, tail)
-	cmd.Stderr = io.MultiWriter(os.Stderr, tail)
+	if sameFile(os.Stdout, os.Stderr) {
+		// One writer gives the command one pipe for both, which keeps their
+		// lines in order, as they would be without aviator-ci.
+		w := io.MultiWriter(os.Stdout, tail)
+		cmd.Stdout, cmd.Stderr = w, w
+	} else {
+		cmd.Stdout = io.MultiWriter(os.Stdout, tail)
+		cmd.Stderr = io.MultiWriter(os.Stderr, tail)
+	}
 	// A background process the command left running can hold the output pipes
 	// open; don't wait on it once the command itself has exited.
 	cmd.WaitDelay = 10 * time.Second
@@ -77,15 +91,17 @@ func execute(command []string, tail io.Writer) int {
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "aviator-ci: %v\n", err)
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
-			return exitNotFound
+			return exitNotFound, false
 		}
-		return exitNotExecutable
+		return exitNotExecutable, false
 	}
+	var stopped atomic.Bool
 	done := make(chan struct{})
 	go func() {
 		for {
 			select {
 			case sig := <-signals:
+				stopped.Store(true)
 				_ = cmd.Process.Signal(sig)
 			case <-done:
 				return
@@ -100,5 +116,14 @@ func execute(command []string, tail io.Writer) int {
 		// The output copy failed; the command itself still exited.
 		warnf("%v", err)
 	}
-	return exitCode(cmd.ProcessState)
+	return exitCode(cmd.ProcessState), stopped.Load()
+}
+
+func sameFile(a, b *os.File) bool {
+	ai, err := a.Stat()
+	if err != nil {
+		return false
+	}
+	bi, err := b.Stat()
+	return err == nil && os.SameFile(ai, bi)
 }

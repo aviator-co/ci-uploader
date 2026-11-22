@@ -21,10 +21,10 @@ func fakeAPI(t *testing.T) *string {
 	var uploaded string
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/api/v1/ci/uploads":
+		switch r.URL.Path {
+		case "/api/v1/ci/uploads":
 			_, _ = io.WriteString(w, `{"skipped":null,"content_type":"application/gzip","files":[{"id":1,"type":"log","upload_url":"`+srv.URL+`/put"}]}`)
-		case r.URL.Path == "/put":
+		case "/put":
 			zr, err := gzip.NewReader(r.Body)
 			if err != nil {
 				t.Error(err)
@@ -34,7 +34,7 @@ func fakeAPI(t *testing.T) *string {
 			mu.Lock()
 			uploaded = string(data)
 			mu.Unlock()
-		case r.URL.Path == "/api/v1/ci/uploads/complete":
+		case "/api/v1/ci/uploads/complete":
 			_ = json.NewEncoder(w).Encode(map[string][]int{"uploaded": {1}})
 		}
 	}))
