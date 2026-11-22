@@ -26,6 +26,7 @@ const uploadTimeout = 2 * time.Minute
 const usage = `Usage: aviator-ci <command> [flags]
 
 Commands:
+  run      Run a test command and upload its output if it fails
   upload   Upload a log after a failed test command
   version  Print the version
 
@@ -43,6 +44,8 @@ func run(args []string) int {
 		return 2
 	}
 	switch args[0] {
+	case "run":
+		return runRun(args[1:])
 	case "upload":
 		return runUpload(args[1:])
 	case "version", "--version":
