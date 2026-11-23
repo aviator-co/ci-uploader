@@ -9,12 +9,12 @@ import (
 )
 
 func TestTailStartsAtALine(t *testing.T) {
-	got := string(Tail([]byte("first line\nsecond line\nthird\n"), 15))
+	got := string(tail([]byte("first line\nsecond line\nthird\n"), 15, 29))
 	want := "[aviator-ci: kept the last 6 of 29 bytes]\nthird\n"
 	if got != want {
 		t.Errorf("Tail = %q, want %q", got, want)
 	}
-	if got := string(Tail([]byte("short\n"), 15)); got != "short\n" {
+	if got := string(tail([]byte("short\n"), 15, 6)); got != "short\n" {
 		t.Errorf("short text changed: %q", got)
 	}
 }

@@ -30,6 +30,12 @@ func Detect(b Build, getenv func(string) string) (Build, error) {
 			}
 		}
 	}
+	if b.Commit == "" && getenv("CHANGE_ID") != "" {
+		// Jenkins builds a pull request merged with its target by default, and
+		// GIT_COMMIT is then that local merge. The PR's head is its second
+		// parent, and Jenkins has no variable for it.
+		b.Commit = pullRequestHead()
+	}
 	if b.Commit == "" {
 		b.Commit = getenv("GIT_COMMIT")
 	}
@@ -76,11 +82,29 @@ func RepoFromURL(url string) string {
 }
 
 func gitHead() string {
+	return git("rev-parse", "HEAD")
+}
+
+// pullRequestHead is HEAD, or its second parent when HEAD is a merge.
+func pullRequestHead() string {
+	// The commit followed by its parents.
+	shas := strings.Fields(git("rev-list", "--parents", "-n", "1", "HEAD"))
+	switch len(shas) {
+	case 0:
+		return ""
+	case 3:
+		return shas[2]
+	default:
+		return shas[0]
+	}
+}
+
+func git(args ...string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "rev-parse", "HEAD").Output()
+	out, err := exec.CommandContext(ctx, "git", args...).Output()
 	if err != nil {
 		return ""
 	}
-	return string(out)
+	return strings.TrimSpace(string(out))
 }

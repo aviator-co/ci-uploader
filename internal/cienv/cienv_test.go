@@ -1,6 +1,8 @@
 package cienv
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -46,5 +48,41 @@ func TestDetect(t *testing.T) {
 	}
 	if _, err := Detect(Build{Repo: "acme/app", Commit: "abc123"}, func(string) string { return "" }); err == nil {
 		t.Error("short sha should fail")
+	}
+}
+
+func TestDetectJenkinsMergedPullRequest(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...) //nolint:gosec,noctx // test fixture
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-q", "-b", "main")
+	run("commit", "-q", "--allow-empty", "-m", "base")
+	run("checkout", "-q", "-b", "pr")
+	run("commit", "-q", "--allow-empty", "-m", "pr")
+	prHead := run("rev-parse", "HEAD")
+	run("checkout", "-q", "main")
+	run("commit", "-q", "--allow-empty", "-m", "target moved")
+	run("merge", "-q", "--no-ff", "--no-edit", "pr")
+	merge := run("rev-parse", "HEAD")
+
+	env := map[string]string{"GIT_URL": "https://github.com/acme/app.git", "GIT_COMMIT": merge, "CHANGE_ID": "12"}
+	b, err := Detect(Build{}, func(k string) string { return env[k] })
+	if err != nil || b.Commit != prHead {
+		t.Errorf("PR build: commit %s (%v), want the PR head %s", b.Commit, err, prHead)
+	}
+
+	delete(env, "CHANGE_ID")
+	b, err = Detect(Build{}, func(k string) string { return env[k] })
+	if err != nil || b.Commit != merge {
+		t.Errorf("branch build: commit %s (%v), want GIT_COMMIT %s", b.Commit, err, merge)
 	}
 }

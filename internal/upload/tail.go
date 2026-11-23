@@ -7,13 +7,8 @@ import (
 	"os"
 )
 
-// Tail returns the last n bytes of text, starting at a line, with a note on
-// how much was cut.
-func Tail(text []byte, n int) []byte {
-	return tail(text, n, int64(len(text)))
-}
-
-// tail is Tail for text that is itself the end of total bytes.
+// tail returns the last n bytes of text, starting at a line, with a note on
+// how much of the whole log, total bytes long, was cut.
 func tail(text []byte, n int, total int64) []byte {
 	if int64(len(text)) >= total && len(text) <= n {
 		return text

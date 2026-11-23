@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,5 +45,16 @@ func TestRetriesServerErrorsOnly(t *testing.T) {
 		case tc.wantErr != 0 && (!errors.As(err, &apiErr) || apiErr.Status != tc.wantErr || apiErr.Message != "nope"):
 			t.Errorf("%v: err = %v", tc.statuses, err)
 		}
+	}
+}
+
+func TestPutErrorHidesTheSignedURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Close()
+	c := New(srv.URL, "tok", "test")
+	c.Backoff = nil
+	err := c.Put(t.Context(), srv.URL+"/obj?X-Goog-Signature=secret", "application/gzip", []byte("x"))
+	if err == nil || strings.Contains(err.Error(), "secret") {
+		t.Errorf("err = %v", err)
 	}
 }

@@ -9,18 +9,23 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/aviator-co/ci-uploader/internal/api"
 )
 
 const (
-	// Aviator's limits: each gzipped file, and a log once decompressed.
-	MaxFileBytes    = 10 << 20
-	MaxLogTextBytes = 40 << 20
-	MaxJUnitFiles   = 100
+	// Aviator's limits on each gzipped file and on the number of reports.
+	MaxFileBytes  = 10 << 20
+	MaxJUnitFiles = 100
 
 	// The end of a log is where failures are, so a longer one keeps its tail.
+	// Well under Aviator's 40 MiB cap on a decompressed log.
 	LogTailBytes = 16 << 20
+
+	// Confirming gets its own budget, so slow report uploads that use up the
+	// caller's can't leave an uploaded log unconfirmed and never read.
+	confirmTimeout = 20 * time.Second
 )
 
 type Request struct {
@@ -99,7 +104,12 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) error 
 		}
 	}
 
-	done, err := client.CompleteUploads(ctx, ids)
+	confirm := func(ids []int64) (*api.CompleteResponse, error) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), confirmTimeout)
+		defer cancel()
+		return client.CompleteUploads(ctx, ids)
+	}
+	done, err := confirm(ids)
 	if err != nil {
 		return fmt.Errorf("confirming uploads: %w", err)
 	}
@@ -109,7 +119,7 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) error 
 				logf("could not upload %s: %v", files[byID[id]].name, err)
 			}
 		}
-		if done, err = client.CompleteUploads(ctx, done.Missing); err != nil {
+		if done, err = confirm(done.Missing); err != nil {
 			return fmt.Errorf("confirming uploads: %w", err)
 		}
 	}
@@ -164,7 +174,7 @@ func prepare(req Request, logf Logf) ([]file, error) {
 // gzipLog keeps as much of the log's tail as fits under the compressed cap.
 // text is the end of a log of total bytes.
 func gzipLog(text []byte, total int64) ([]byte, error) {
-	for n := min(LogTailBytes, MaxLogTextBytes); ; n /= 2 {
+	for n := LogTailBytes; ; n /= 2 {
 		gz, err := gzipBytes(tail(text, n, total))
 		if err != nil || len(gz) <= MaxFileBytes {
 			return gz, err

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -86,9 +87,19 @@ func New(host, token, userAgent string) *Client {
 		Host:      strings.TrimRight(host, "/"),
 		Token:     token,
 		UserAgent: userAgent,
-		HTTP:      &http.Client{Timeout: 60 * time.Second},
+		HTTP:      newHTTPClient(),
 		Backoff:   []time.Duration{time.Second, 3 * time.Second},
 	}
+}
+
+// newHTTPClient has no overall timeout, since that would also cap sending the
+// body and a large log on a slow uplink would then fail on every attempt. The
+// wait for an answer once the body is sent is capped instead, and the caller's
+// context bounds the rest.
+func newHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 60 * time.Second
+	return &http.Client{Transport: transport}
 }
 
 func (c *Client) CreateUploads(ctx context.Context, req CreateRequest) (*CreateResponse, error) {
@@ -108,14 +119,20 @@ func (c *Client) CompleteUploads(ctx context.Context, ids []int64) (*CompleteRes
 }
 
 // Put uploads body to a signed URL from CreateUploads.
-func (c *Client) Put(ctx context.Context, url, contentType string, body []byte) error {
+func (c *Client) Put(ctx context.Context, uploadURL, contentType string, body []byte) error {
 	return c.retry(ctx, func() error {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(body))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Content-Type", contentType)
 		_, err = c.send(req)
+		// A url.Error carries the signed URL, which lets anyone holding it
+		// write there until it expires.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return fmt.Errorf("PUT failed: %w", urlErr.Err)
+		}
 		return err
 	})
 }
@@ -173,7 +190,7 @@ func (c *Client) send(req *http.Request) ([]byte, error) {
 func (c *Client) retry(ctx context.Context, attempt func() error) error {
 	var err error
 	for i := 0; ; i++ {
-		if err = attempt(); err == nil || !retriable(err) || i >= len(c.Backoff) {
+		if err = attempt(); err == nil || !retriable(ctx, err) || i >= len(c.Backoff) {
 			return err
 		}
 		select {
@@ -184,10 +201,14 @@ func (c *Client) retry(ctx context.Context, attempt func() error) error {
 	}
 }
 
-func retriable(err error) bool {
+func retriable(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	var apiErr *Error
 	if errors.As(err, &apiErr) {
 		return apiErr.Status == http.StatusTooManyRequests || apiErr.Status >= 500
 	}
-	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+	// A transport error, a response header timeout included.
+	return true
 }

@@ -72,7 +72,7 @@ func (t *target) register(fs *flag.FlagSet) {
 	fs.StringVar(&t.check, "check", "", "the check's name as it reports to GitHub, matching flaky_retry's retriable_checks (required)")
 	fs.Var(&t.junit, "junit", "JUnit report files to upload too, as a glob such as 'reports/**/*.xml' (repeatable)")
 	fs.StringVar(&t.build.Repo, "repo", "", "owner/name of the GitHub repository (default: from GIT_URL)")
-	fs.StringVar(&t.build.Commit, "commit", "", "full SHA of the commit under test (default: GIT_COMMIT, then git HEAD)")
+	fs.StringVar(&t.build.Commit, "commit", "", "full SHA of the commit under test (default: the PR head in a Jenkins PR build, else GIT_COMMIT, then git HEAD)")
 	fs.StringVar(&t.build.BuildURL, "build-url", "", "URL of this build (default: BUILD_URL)")
 }
 
@@ -96,7 +96,9 @@ func runUpload(args []string) int {
 	}
 	// Required: any default would guess the build's result, and in a Jenkins
 	// post block a wrong guess changes it.
-	if err == nil && *exitCode < 0 {
+	given := false
+	fs.Visit(func(f *flag.Flag) { given = given || f.Name == "exit-code" })
+	if err == nil && !given {
 		fmt.Fprintln(os.Stderr, "aviator-ci: --exit-code is required")
 		return 2
 	}
@@ -112,6 +114,7 @@ func runUpload(args []string) int {
 	if *exitCode == 0 {
 		return 0
 	}
+	*exitCode = failureCode(*exitCode)
 
 	var log []byte
 	var size int64
@@ -141,9 +144,18 @@ func exitCodeArg(args []string) (int, bool) {
 			value = args[i+1]
 		}
 		code, err := strconv.Atoi(value)
-		return max(code, 0), err == nil
+		return failureCode(code), err == nil
 	}
 	return 0, false
+}
+
+// failureCode keeps a negative code, which no process exits with, from
+// wrapping to something that reads as success.
+func failureCode(code int) int {
+	if code < 0 {
+		return 1
+	}
+	return code
 }
 
 // send uploads whatever it can and only ever warns, so a problem here never
