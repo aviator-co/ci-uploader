@@ -1,0 +1,28 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "enabledManagers": ["gomod", "github-actions"],
+  "postUpdateOptions": ["gomodTidy"],
+  "minimumReleaseAge": "7 days",
+  "prConcurrentLimit": 0,
+  "prHourlyLimit": 0,
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "github actions"
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go"],
+      "matchDepTypes": ["golang"],
+      "rangeStrategy": "bump",
+      "groupName": "go and golangci-lint"
+    },
+    {
+      "matchPackageNames": ["golangci/golangci-lint"],
+      "groupName": "go and golangci-lint"
+    }
+  ]
+}

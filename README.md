@@ -55,7 +55,7 @@ from stopping before the upload.
 | `--check` | The check's name, matching `retriable_checks`. Required. |
 | `--junit` | JUnit reports to upload too, as a glob such as `'reports/**/*.xml'`. Repeatable. |
 | `--repo` | `owner/name`. Default: from `GIT_URL`. |
-| `--commit` | Full SHA under test. Default: `GIT_COMMIT`, then `git rev-parse HEAD`. Pass it when your CI builds a merge of the PR with its target. |
+| `--commit` | Full SHA under test. Default: in a Jenkins PR build, the PR's head (the second parent when Jenkins merged it with its target); else `GIT_COMMIT`, then `git rev-parse HEAD`. Pass it when another CI builds a merge of the PR with its target. |
 | `--build-url` | This build's URL. Default: `BUILD_URL`. |
 
 Notes for `run`:
