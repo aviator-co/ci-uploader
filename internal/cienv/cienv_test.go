@@ -56,7 +56,7 @@ func TestDetectJenkinsMergedPullRequest(t *testing.T) {
 	t.Chdir(dir)
 	run := func(args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", args...) //nolint:gosec,noctx // test fixture
+		cmd := exec.Command("git", args...) //nolint:noctx // test fixture
 		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
