@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/aviator-co/ci-uploader/internal/junit"
 )
 
 const DefaultHost = "https://api.aviator.co"
@@ -34,6 +36,12 @@ type CreateRequest struct {
 	CheckName string         `json:"check_name"`
 	BuildURL  string         `json:"build_url,omitempty"`
 	Files     []DeclaredFile `json:"files"`
+	Branch    string         `json:"branch,omitempty"`
+	Variant   string         `json:"variant,omitempty"`
+	ExitCode  *int           `json:"exit_code,omitempty"`
+	// Whether every report parsed and was written by this run.
+	JUnitComplete *bool           `json:"junit_complete,omitempty"`
+	FailedTests   []junit.Failure `json:"failed_tests,omitempty"`
 }
 
 type Slot struct {
@@ -47,6 +55,21 @@ type CreateResponse struct {
 	Skipped     *string `json:"skipped"`
 	ContentType string  `json:"content_type"`
 	Files       []Slot  `json:"files"`
+	// Set when Aviator tracks this repository's tests.
+	Quarantine *Quarantine `json:"quarantine"`
+}
+
+// Quarantine says which of the failed tests are quarantined.
+type Quarantine struct {
+	// "enforce" lets quarantined failures pass the build; "shadow" only
+	// reports them.
+	Mode  string    `json:"mode"`
+	Tests []TestRef `json:"tests"`
+}
+
+type TestRef struct {
+	Classname string `json:"classname"`
+	Name      string `json:"name"`
 }
 
 type CompleteResponse struct {

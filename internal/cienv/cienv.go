@@ -15,6 +15,20 @@ type Build struct {
 	Repo     string
 	Commit   string
 	BuildURL string
+	// The branch under test, or "" when the CI doesn't say and HEAD is detached.
+	Branch string
+}
+
+// branchVars name the branch, most specific first: a Jenkins PR build has the
+// PR's branch in CHANGE_BRANCH and "PR-123" in BRANCH_NAME.
+var branchVars = []string{
+	"CHANGE_BRANCH",
+	"BRANCH_NAME",
+	"GIT_BRANCH",
+	"GITHUB_HEAD_REF",
+	"GITHUB_REF_NAME",
+	"BUILDKITE_BRANCH",
+	"CIRCLE_BRANCH",
 }
 
 var shaRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -44,6 +58,9 @@ func Detect(b Build, getenv func(string) string) (Build, error) {
 	}
 	if b.BuildURL == "" {
 		b.BuildURL = getenv("BUILD_URL")
+	}
+	if b.Branch == "" {
+		b.Branch = detectBranch(getenv)
 	}
 
 	b.Commit = strings.ToLower(strings.TrimSpace(b.Commit))
@@ -79,6 +96,19 @@ func RepoFromURL(url string) string {
 		return ""
 	}
 	return owner + "/" + name
+}
+
+func detectBranch(getenv func(string) string) string {
+	for _, key := range branchVars {
+		if v := strings.TrimSpace(getenv(key)); v != "" {
+			// Jenkins' GIT_BRANCH carries the remote.
+			return strings.TrimPrefix(v, "origin/")
+		}
+	}
+	if branch := git("rev-parse", "--abbrev-ref", "HEAD"); branch != "HEAD" {
+		return branch
+	}
+	return ""
 }
 
 func gitHead() string {

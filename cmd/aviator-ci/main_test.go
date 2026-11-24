@@ -22,3 +22,18 @@ func TestUploadKeepsExitCodeOnBadFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestParseStartedAt(t *testing.T) {
+	for in, want := range map[string]int64{"1700000000": 1700000000, "2023-11-14T22:13:20Z": 1700000000} {
+		got, err := parseStartedAt(in)
+		if err != nil || got.Unix() != want {
+			t.Errorf("parseStartedAt(%q) = %v, %v", in, got, err)
+		}
+	}
+	if got, err := parseStartedAt(""); err != nil || !got.IsZero() {
+		t.Errorf("empty = %v, %v", got, err)
+	}
+	if _, err := parseStartedAt("yesterday"); err == nil {
+		t.Error("no error")
+	}
+}

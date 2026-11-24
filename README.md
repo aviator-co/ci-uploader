@@ -1,12 +1,15 @@
 # aviator-ci
 
-Uploads the output of a failed CI check to [Aviator](https://aviator.co), so
-the merge queue's `flaky_retry` can tell a flaky failure from a real one on CI
-providers whose logs Aviator can't read itself, such as Jenkins.
+Uploads CI test results to [Aviator](https://aviator.co):
 
-- Uploads only when the test command fails. Passing builds make no network calls.
-- Always exits with the test command's exit code, even if the upload fails.
-- Uploads only for merge queue builds. Others are skipped after one API call.
+- **Logs of failed checks**, so the merge queue's `flaky_retry` can tell a
+  flaky failure from a real one on CI providers whose logs Aviator can't read
+  itself, such as Jenkins.
+- **JUnit reports from every build**, passing ones included, so Aviator's
+  flaky tests can track each test's history. Without `--junit`, passing builds
+  make no network calls.
+
+It always exits with the test command's exit code, even if the upload fails.
 
 ## Install
 
@@ -46,14 +49,19 @@ rc=0; make test > out.txt 2>&1 || rc=$?
 aviator-ci upload --check continuous-integration/jenkins/tests --log out.txt --exit-code $rc
 ```
 
-`--exit-code` is required for `upload`. With `0` nothing is uploaded. The
+`--exit-code` is required for `upload`. With `0` only JUnit reports are
+uploaded. Pass `--started-at` with the test command's start time, so reports
+left by an earlier build aren't mistaken for this one's. The
 `|| rc=$?` keeps a shell running with `-e`, as Jenkins and GitHub Actions do,
 from stopping before the upload.
 
 | Flag | |
 |---|---|
 | `--check` | The check's name, matching `retriable_checks`. Required. |
-| `--junit` | JUnit reports to upload too, as a glob such as `'reports/**/*.xml'`. Repeatable. |
+| `--junit` | JUnit reports to upload, as a glob such as `'reports/**/*.xml'`. Uploaded on passing builds too. Repeatable. |
+| `--variant` | Splits a test's history by environment, such as `linux`. At most 128 characters, no `\|`. |
+| `--branch` | The branch under test. Default: from the CI environment, then git. |
+| `--started-at` | `upload` only: when the test command started, as Unix seconds or RFC 3339. |
 | `--repo` | `owner/name`. Default: from `GIT_URL`. |
 | `--commit` | Full SHA under test. Default: in a Jenkins PR build, the PR's head (the second parent when Jenkins merged it with its target); else `GIT_COMMIT`, then `git rev-parse HEAD`. Pass it when another CI builds a merge of the PR with its target. |
 | `--build-url` | This build's URL. Default: `BUILD_URL`. |
