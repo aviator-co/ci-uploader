@@ -54,33 +54,48 @@ func TestDetect(t *testing.T) {
 func TestDetectJenkinsMergedPullRequest(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	run := func(args ...string) string {
+	run := func(committer string, args ...string) string {
 		t.Helper()
 		cmd := exec.Command("git", args...) //nolint:noctx // test fixture
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL="+committer)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 		return strings.TrimSpace(string(out))
 	}
-	run("init", "-q", "-b", "main")
-	run("commit", "-q", "--allow-empty", "-m", "base")
-	run("checkout", "-q", "-b", "pr")
-	run("commit", "-q", "--allow-empty", "-m", "pr")
-	prHead := run("rev-parse", "HEAD")
-	run("checkout", "-q", "main")
-	run("commit", "-q", "--allow-empty", "-m", "target moved")
-	run("merge", "-q", "--no-ff", "--no-edit", "pr")
-	merge := run("rev-parse", "HEAD")
+	run("t@t", "init", "-q", "-b", "main")
+	run("t@t", "commit", "-q", "--allow-empty", "-m", "base")
+	run("t@t", "checkout", "-q", "-b", "pr")
+	run("t@t", "commit", "-q", "--allow-empty", "-m", "pr")
+	run("t@t", "checkout", "-q", "main")
+	run("t@t", "commit", "-q", "--allow-empty", "-m", "target moved")
+	run("t@t", "checkout", "-q", "pr")
+	// A PR head that is itself a merge, as queue drafts can be.
+	run("t@t", "merge", "-q", "--no-ff", "--no-edit", "main")
+	prHead := run("t@t", "rev-parse", "HEAD")
+	run("t@t", "checkout", "-q", "main")
+	run("t@t", "commit", "-q", "--allow-empty", "-m", "target moved again")
+	run("t@t", "checkout", "-q", "--detach", "pr")
+	// Jenkins checks out the PR head and merges the target into it.
+	run(jenkinsMergeCommitter, "merge", "-q", "--no-ff", "--no-edit", "main")
+	merge := run("t@t", "rev-parse", "HEAD")
 
 	env := map[string]string{"GIT_URL": "https://github.com/acme/app.git", "GIT_COMMIT": merge, "CHANGE_ID": "12"}
 	b, err := Detect(Build{}, func(k string) string { return env[k] })
 	if err != nil || b.Commit != prHead {
-		t.Errorf("PR build: commit %s (%v), want the PR head %s", b.Commit, err, prHead)
+		t.Errorf("Jenkins merge: commit %s (%v), want the PR head %s", b.Commit, err, prHead)
+	}
+
+	run("t@t", "checkout", "-q", "--detach", prHead)
+	env["GIT_COMMIT"] = prHead
+	b, err = Detect(Build{}, func(k string) string { return env[k] })
+	if err != nil || b.Commit != prHead {
+		t.Errorf("PR head that is a merge: commit %s (%v), want %s", b.Commit, err, prHead)
 	}
 
 	delete(env, "CHANGE_ID")
+	env["GIT_COMMIT"] = merge
 	b, err = Detect(Build{}, func(k string) string { return env[k] })
 	if err != nil || b.Commit != merge {
 		t.Errorf("branch build: commit %s (%v), want GIT_COMMIT %s", b.Commit, err, merge)

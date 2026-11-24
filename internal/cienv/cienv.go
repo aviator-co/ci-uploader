@@ -32,8 +32,8 @@ func Detect(b Build, getenv func(string) string) (Build, error) {
 	}
 	if b.Commit == "" && getenv("CHANGE_ID") != "" {
 		// Jenkins builds a pull request merged with its target by default, and
-		// GIT_COMMIT is then that local merge. The PR's head is its second
-		// parent, and Jenkins has no variable for it.
+		// GIT_COMMIT is then that local merge. Jenkins has no variable for the
+		// PR head.
 		b.Commit = pullRequestHead()
 	}
 	if b.Commit == "" {
@@ -85,18 +85,22 @@ func gitHead() string {
 	return git("rev-parse", "HEAD")
 }
 
-// pullRequestHead is HEAD, or its second parent when HEAD is a merge.
+// jenkinsMergeCommitter is who Jenkins' merge-with-target checkout commits
+// as. Checking it keeps a PR head that is itself a merge from being mistaken
+// for Jenkins' merge.
+const jenkinsMergeCommitter = "nobody@nowhere"
+
+// pullRequestHead is HEAD, or its first parent when HEAD is Jenkins' merge of
+// the target into the PR head.
 func pullRequestHead() string {
-	// The commit followed by its parents.
-	shas := strings.Fields(git("rev-list", "--parents", "-n", "1", "HEAD"))
-	switch len(shas) {
-	case 0:
+	fields := strings.Fields(git("log", "-1", "--format=%H %ce %P", "HEAD"))
+	if len(fields) == 0 {
 		return ""
-	case 3:
-		return shas[2]
-	default:
-		return shas[0]
 	}
+	if len(fields) == 4 && fields[1] == jenkinsMergeCommitter {
+		return fields[2]
+	}
+	return fields[0]
 }
 
 func git(args ...string) string {
