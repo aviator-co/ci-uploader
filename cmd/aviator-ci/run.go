@@ -66,7 +66,8 @@ func runRun(args []string) int {
 	switch {
 	case code != 0:
 		log, total := tail.Bytes()
-		send(t, outcome{log: log, logSize: total, exitCode: code, started: started})
+		result := send(t, outcome{log: log, logSize: total, exitCode: code, started: started})
+		return applyQuarantine(t, code, result)
 	case len(t.junit) > 0:
 		// Passing runs are half of what tells a flaky test from a broken one.
 		send(t, outcome{exitCode: code, started: started})

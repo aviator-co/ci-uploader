@@ -6,10 +6,11 @@ Uploads CI test results to [Aviator](https://aviator.co):
   flaky failure from a real one on CI providers whose logs Aviator can't read
   itself, such as Jenkins.
 - **JUnit reports from every build**, passing ones included, so Aviator's
-  flaky tests can track each test's history. Without `--junit`, passing builds
-  make no network calls.
+  flaky tests can track each test's history, detect flaky tests and quarantine
+  them. Without `--junit`, passing builds make no network calls.
 
-It always exits with the test command's exit code, even if the upload fails.
+It exits with the test command's exit code, even if the upload fails. The only
+exception is `--quarantine`, when every failed test is quarantined.
 
 ## Install
 
@@ -30,7 +31,8 @@ Builds are published for `linux`, `darwin` and `windows` on `amd64` and
 ## Setup
 
 1. Turn on `flaky_retry` in your Aviator config and list the check under
-   `retriable_checks`, with the exact name your CI reports to GitHub.
+   `retriable_checks`, with the exact name your CI reports to GitHub. For
+   flaky tests, turn on `flaky_tests` and pass `--junit`.
 2. Set `AVIATOR_API_TOKEN` to an Aviator API token in the CI job.
 3. For self-hosted Aviator, set `AVIATOR_API_HOST` to its API URL.
 
@@ -59,12 +61,14 @@ from stopping before the upload.
 |---|---|
 | `--check` | The check's name, matching `retriable_checks`. Required. |
 | `--junit` | JUnit reports to upload, as a glob such as `'reports/**/*.xml'`. Uploaded on passing builds too. Repeatable. |
+| `--quarantine` | Exit 0 when every failed test is quarantined in Aviator. See below. |
+| `--quarantine-exit-codes` | Exit codes that mean "tests failed", which `--quarantine` may turn into 0. Default: `1`. |
 | `--variant` | Splits a test's history by environment, such as `linux`. At most 128 characters, no `\|`. |
 | `--branch` | The branch under test. Default: from the CI environment, then git. |
 | `--pull-request` | The pull request number in a PR build. Default: from `CHANGE_ID`, `GITHUB_REF`, `BUILDKITE_PULL_REQUEST` or CircleCI. |
 | `--started-at` | `upload` only: when the test command started, as Unix seconds or RFC 3339. Required with `--junit`. |
 | `--repo` | `owner/name`. Default: from `GIT_URL`. |
-| `--commit` | Full SHA under test. Default: in a Jenkins PR build, the PR's head (the second parent when Jenkins merged it with its target); else `GIT_COMMIT`, then `git rev-parse HEAD`. Pass it when another CI builds a merge of the PR with its target. |
+| `--commit` | Full SHA under test. Default: in a Jenkins PR build, the PR's head (the first parent when Jenkins merged it with its target); else `GIT_COMMIT`, then `git rev-parse HEAD`. Pass it when another CI builds a merge of the PR with its target. |
 | `--build-url` | This build's URL. Default: `BUILD_URL`. |
 
 Notes for `run`:
@@ -73,6 +77,39 @@ Notes for `run`:
 - When the build is aborted, `aviator-ci` passes the signal on and uploads
   nothing. Put a timeout inside it (`aviator-ci run ... -- timeout 30m make
   test`), so a hung test still uploads.
+
+## Quarantine
+
+With `--quarantine`, a failed build exits 0 only when all of these hold:
+
+- the repository's `flaky_tests.quarantine.mode` is `enforce`;
+- every JUnit report parsed, and was written after the command started (for
+  `upload`, that needs `--started-at`);
+- the reports show at least one failed test, and every one is quarantined;
+- the exit code is one of `--quarantine-exit-codes`.
+
+Otherwise, and whenever Aviator can't be reached, it keeps the real exit code.
+In `shadow` mode it prints which failures would have been quarantined.
+
+These checks can only see the tests that reported. So wrap a single test
+runner invocation, whose failing exit code means only "tests failed":
+
+```bash
+aviator-ci run --check ci/tests --junit 'reports/*.xml' --quarantine -- pytest --junitxml=reports/unit.xml
+```
+
+Don't use `--quarantine` around:
+
+- a build tool, such as `make` (which exits 2 for any failed step), Gradle or
+  Maven. A compile error in one module exits the same way as a failed test,
+  and writes no report;
+- a fail-fast run, such as `pytest -x`, `jest --bail`, or Maven's default
+  reactor, which skips the tests after the first failure;
+- anything else in the same command, such as a lint step or a coverage
+  threshold.
+
+Compile in an earlier step, and run each test runner in its own `aviator-ci`
+invocation.
 
 ## Releasing
 
