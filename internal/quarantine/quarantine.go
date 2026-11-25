@@ -23,7 +23,7 @@ type Decision struct {
 	Reason string
 }
 
-// Decide passes the build only when Aviator enforces quarantine, the reports
+// Decide passes the build only when Aviator quarantines every failure, the reports
 // were complete, the exit code means "tests failed", and every failure is
 // quarantined. Anything else keeps the real result.
 func Decide(code int, exitCodes []int, complete bool, failures []junit.Failure, q *api.Quarantine) Decision {
@@ -39,27 +39,33 @@ func Decide(code int, exitCodes []int, complete bool, failures []junit.Failure, 
 	case !slices.Contains(exitCodes, code):
 		return Decision{Reason: fmt.Sprintf("exit code %d is not a test failure (--quarantine-exit-codes)", code)}
 	}
-	quarantined := map[api.TestRef]bool{}
-	for _, t := range q.Tests {
-		quarantined[t] = true
-	}
-	var loose []string
-	for _, f := range failures {
-		if !quarantined[api.TestRef{Classname: f.Classname, Name: f.Name}] {
-			loose = append(loose, f.Classname+"::"+f.Name)
-		}
-	}
-	if len(loose) > 0 {
-		return Decision{Reason: fmt.Sprintf("%d failed test(s) are not quarantined: %s", len(loose), summarize(loose))}
-	}
 	names := make([]string, len(failures))
 	for i, f := range failures {
 		names[i] = f.Classname + "::" + f.Name
 	}
-	if q.Mode != "enforce" {
+	loose := notIn(failures, q.Tests)
+	if len(loose) == 0 {
+		return Decision{Pass: true, Reason: fmt.Sprintf("every failure is quarantined: %s", summarize(names))}
+	}
+	if len(q.ShadowTests) > 0 && len(notIn(failures, q.ShadowTests)) == 0 {
 		return Decision{Reason: fmt.Sprintf("shadow mode: would have passed, every failure is quarantined: %s", summarize(names))}
 	}
-	return Decision{Pass: true, Reason: fmt.Sprintf("every failure is quarantined: %s", summarize(names))}
+	return Decision{Reason: fmt.Sprintf("%d failed test(s) are not quarantined: %s", len(loose), summarize(loose))}
+}
+
+// notIn names the failures whose test isn't in tests.
+func notIn(failures []junit.Failure, tests []api.TestRef) []string {
+	in := map[api.TestRef]bool{}
+	for _, t := range tests {
+		in[t] = true
+	}
+	var out []string
+	for _, f := range failures {
+		if !in[api.TestRef{Classname: f.Classname, Name: f.Name}] {
+			out = append(out, f.Classname+"::"+f.Name)
+		}
+	}
+	return out
 }
 
 func summarize(names []string) string {

@@ -10,8 +10,8 @@ import (
 func TestDecide(t *testing.T) {
 	flaky := junit.Failure{Classname: "a", Name: "flaky"}
 	broken := junit.Failure{Classname: "a", Name: "real"}
-	enforce := &api.Quarantine{Mode: "enforce", Tests: []api.TestRef{{Classname: "a", Name: "flaky"}}}
-	shadow := &api.Quarantine{Mode: "shadow", Tests: enforce.Tests}
+	enforce := &api.Quarantine{Tests: []api.TestRef{{Classname: "a", Name: "flaky"}}}
+	shadow := &api.Quarantine{ShadowTests: enforce.Tests}
 	for _, tc := range []struct {
 		name     string
 		code     int

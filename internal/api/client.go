@@ -70,10 +70,11 @@ type CreateResponse struct {
 
 // Quarantine says which of the failed tests are quarantined.
 type Quarantine struct {
-	// "enforce" lets quarantined failures pass the build; "shadow" only
-	// reports them.
-	Mode  string    `json:"mode"`
+	// Tests whose failures may pass the build.
 	Tests []TestRef `json:"tests"`
+	// In shadow mode, the tests that would have been quarantined. Tests is
+	// then empty.
+	ShadowTests []TestRef `json:"shadow_tests"`
 }
 
 type TestRef struct {
