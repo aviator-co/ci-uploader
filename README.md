@@ -61,7 +61,7 @@ from stopping before the upload.
 |---|---|
 | `--check` | The check's name, matching `retriable_checks`. Required. |
 | `--junit` | JUnit reports to upload, as a glob such as `'reports/**/*.xml'`. Uploaded on passing builds too. Repeatable. |
-| `--quarantine` | Exit 0 when every failed test is quarantined in Aviator. See below. |
+| `--quarantine` | Exit 0 when every failed test is quarantined in Aviator. Needs `--junit`; `run` exits 2 before running the command without it. See below. |
 | `--quarantine-exit-codes` | Exit codes that mean "tests failed", which `--quarantine` may turn into 0. Default: `1`. |
 | `--variant` | Splits a test's history by environment, such as `linux`. At most 128 characters, no `\|`. |
 | `--branch` | The branch under test. Default: from the CI environment, then git. |
@@ -107,6 +107,10 @@ Don't use `--quarantine` around:
   reactor, which skips the tests after the first failure;
 - anything else in the same command, such as a lint step or a coverage
   threshold.
+
+The test reporter must also report a test file that fails to load, such as one
+with a syntax error, as a failure. jest-junit leaves those out unless
+`reportTestSuiteErrors` is on.
 
 Compile in an earlier step, and run each test runner in its own `aviator-ci`
 invocation.

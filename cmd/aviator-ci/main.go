@@ -77,7 +77,9 @@ type target struct {
 	variant    string
 	quarantine bool
 	exitCodes  string
-	build      cienv.Build
+	// Parsed from exitCodes by checkQuarantine.
+	codes []int
+	build cienv.Build
 }
 
 func (t *target) register(fs *flag.FlagSet) {
@@ -85,7 +87,7 @@ func (t *target) register(fs *flag.FlagSet) {
 	fs.Var(&t.junit, "junit", "JUnit report files to upload, as a glob such as 'reports/**/*.xml' (repeatable); uploaded on success too, for flaky tests")
 	fs.StringVar(&t.variant, "variant", "", "splits a test's history by environment, such as 'linux'; at most 128 characters, no '|' (optional)")
 	fs.BoolVar(&t.quarantine, "quarantine", false, "exit 0 when every failed test is quarantined in Aviator (needs --junit; wrap a single test runner, not a build tool or a fail-fast run)")
-	fs.StringVar(&t.exitCodes, "quarantine-exit-codes", joinCodes(quarantine.DefaultExitCodes), "exit codes that mean tests failed, which --quarantine may turn into 0, comma-separated")
+	fs.StringVar(&t.exitCodes, "quarantine-exit-codes", "1", "exit codes that mean tests failed, which --quarantine may turn into 0, comma-separated")
 	fs.StringVar(&t.build.Branch, "branch", "", "the branch under test (default: from the CI environment, then git)")
 	fs.IntVar(&t.build.PullRequest, "pull-request", 0, "the pull request number in a PR build (default: from the CI environment)")
 	fs.StringVar(&t.build.Repo, "repo", "", "owner/name of the GitHub repository (default: from GIT_URL)")
@@ -134,6 +136,10 @@ func runUpload(args []string) int {
 		}
 		return 2
 	}
+	if err := t.checkQuarantine(); err != nil {
+		warnf("%v; keeping the exit code", err)
+		t.quarantine = false
+	}
 	started, err := parseStartedAt(*startedAt)
 	if err != nil {
 		warnf("--started-at: %v; treating the reports as incomplete", err)
@@ -144,8 +150,6 @@ func runUpload(args []string) int {
 		}
 		return 0
 	}
-	*exitCode = failureCode(*exitCode)
-
 	var log []byte
 	var size int64
 	if *logPath != "" {
@@ -153,7 +157,7 @@ func runUpload(args []string) int {
 			warnf("could not read the log: %v", err)
 		}
 	}
-	result := send(t, outcome{log: log, logSize: size, exitCode: *exitCode, started: started})
+	result := send(t, outcome{log: log, logSize: size, exitCode: failureCode(*exitCode), started: started})
 	return applyQuarantine(t, *exitCode, result)
 }
 
@@ -236,11 +240,10 @@ func send(t target, r outcome) upload.Result {
 	for _, pattern := range t.junit {
 		paths, err := upload.Glob(pattern)
 		if err != nil {
-			warnf("bad --junit pattern %q: %v", pattern, err)
+			// Unreadable directories may hold a report; what did match still goes.
+			warnf("--junit %q: %v", pattern, err)
 			missing = true
-			continue
-		}
-		if len(paths) == 0 {
+		} else if len(paths) == 0 {
 			warnf("--junit %q matched no reports", pattern)
 			missing = true
 		}
@@ -280,36 +283,35 @@ func send(t target, r outcome) upload.Result {
 	return result
 }
 
-// applyQuarantine returns 0 when --quarantine is on and every failure is
-// quarantined, and code otherwise.
-func applyQuarantine(t target, code int, result upload.Result) int {
+func (t *target) checkQuarantine() error {
 	if !t.quarantine {
-		return code
+		return nil
 	}
 	if len(t.junit) == 0 {
-		warnf("--quarantine needs --junit; keeping exit code %d", code)
-		return code
+		return errors.New("--quarantine needs --junit")
 	}
 	codes, err := quarantine.ParseExitCodes(t.exitCodes)
 	if err != nil {
-		warnf("--quarantine-exit-codes: %v; keeping exit code %d", err, code)
-		return code
+		return fmt.Errorf("--quarantine-exit-codes: %w", err)
 	}
-	d := quarantine.Decide(code, codes, result.JUnitComplete, result.Failures, result.Quarantine)
+	t.codes = codes
+	return nil
+}
+
+// applyQuarantine returns 0 when --quarantine is on and every failure is
+// quarantined, and the failing exit code otherwise. It decides on code as
+// given, so a negative one never counts as a test failure.
+func applyQuarantine(t target, code int, result upload.Result) int {
+	if !t.quarantine {
+		return failureCode(code)
+	}
+	d := quarantine.Decide(code, t.codes, result.JUnitComplete, result.Failures, result.Quarantine)
 	if d.Pass {
 		infof("passing the build: %s", d.Reason)
 		return 0
 	}
-	infof("keeping exit code %d: %s", code, d.Reason)
-	return code
-}
-
-func joinCodes(codes []int) string {
-	parts := make([]string, len(codes))
-	for i, c := range codes {
-		parts[i] = strconv.Itoa(c)
-	}
-	return strings.Join(parts, ",")
+	infof("keeping exit code %d: %s", failureCode(code), d.Reason)
+	return failureCode(code)
 }
 
 func infof(format string, args ...any) {

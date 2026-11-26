@@ -12,11 +12,6 @@ import (
 	"github.com/aviator-co/ci-uploader/internal/junit"
 )
 
-// DefaultExitCodes are the codes test runners such as pytest and Jest use for
-// "tests failed". Build tools (Gradle, Maven, make) use the same codes for any
-// failure, so they can't tell a compile error from a test failure.
-var DefaultExitCodes = []int{1}
-
 // Decision is whether to pass the build, and why.
 type Decision struct {
 	Pass   bool
@@ -28,8 +23,6 @@ type Decision struct {
 // quarantined. Anything else keeps the real result.
 func Decide(code int, exitCodes []int, complete bool, failures []junit.Failure, q *api.Quarantine) Decision {
 	switch {
-	case code == 0:
-		return Decision{Reason: "the build passed"}
 	case q == nil:
 		return Decision{Reason: "Aviator did not answer with a quarantine decision"}
 	case len(failures) == 0:
@@ -43,14 +36,16 @@ func Decide(code int, exitCodes []int, complete bool, failures []junit.Failure, 
 	for i, f := range failures {
 		names[i] = f.Classname + "::" + f.Name
 	}
-	loose := notIn(failures, q.Tests)
-	if len(loose) == 0 {
-		return Decision{Pass: true, Reason: fmt.Sprintf("every failure is quarantined: %s", summarize(names))}
-	}
-	if len(q.ShadowTests) > 0 && len(notIn(failures, q.ShadowTests)) == 0 {
+	if len(q.ShadowTests) > 0 {
+		if loose := notIn(failures, q.ShadowTests); len(loose) > 0 {
+			return Decision{Reason: fmt.Sprintf("shadow mode: %d failed test(s) are not quarantined: %s", len(loose), summarize(loose))}
+		}
 		return Decision{Reason: fmt.Sprintf("shadow mode: would have passed, every failure is quarantined: %s", summarize(names))}
 	}
-	return Decision{Reason: fmt.Sprintf("%d failed test(s) are not quarantined: %s", len(loose), summarize(loose))}
+	if loose := notIn(failures, q.Tests); len(loose) > 0 {
+		return Decision{Reason: fmt.Sprintf("%d failed test(s) are not quarantined: %s", len(loose), summarize(loose))}
+	}
+	return Decision{Pass: true, Reason: fmt.Sprintf("every failure is quarantined: %s", summarize(names))}
 }
 
 // notIn names the failures whose test isn't in tests.
