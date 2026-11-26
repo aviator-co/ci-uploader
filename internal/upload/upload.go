@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"time"
-	"unicode/utf8"
 
 	"github.com/aviator-co/ci-uploader/internal/api"
 	"github.com/aviator-co/ci-uploader/internal/junit"
@@ -21,17 +20,17 @@ const (
 	// Aviator's limits on each gzipped file and on the number of reports.
 	MaxFileBytes  = 10 << 20
 	MaxJUnitFiles = 100
-	// Aviator's limits on the failed tests sent with an upload. A run that
-	// goes past them can't be quarantined, so it's marked incomplete.
-	MaxFailedTests   = 1000
-	MaxTestNameChars = 4096
+	// Aviator's limit on the failed tests sent with an upload. A run that goes
+	// past it can't be quarantined, so it's marked incomplete.
+	MaxFailedTests = 1000
 
 	// The end of a log is where failures are, so a longer one keeps its tail.
 	// Well under Aviator's 40 MiB cap on a decompressed log.
 	LogTailBytes = 16 << 20
 
-	// Confirming gets its own budget, so slow report uploads that use up the
-	// caller's can't leave an uploaded log unconfirmed and never read.
+	// Confirming a failed build's upload gets its own budget, so slow report
+	// uploads that use up the caller's can't leave an uploaded log unconfirmed
+	// and never read. A passing build's confirm stays inside the caller's.
 	confirmTimeout = 20 * time.Second
 )
 
@@ -41,8 +40,10 @@ type Request struct {
 	Check    string
 	BuildURL string
 	Branch   string
-	Variant  string
-	ExitCode int
+	// The pull request a PR build is for, or 0.
+	PullRequest int
+	Variant     string
+	ExitCode    int
 	// The end of the log, and the whole log's size if that's longer.
 	Log        []byte
 	LogSize    int64
@@ -91,15 +92,16 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) (Resul
 		declared[i] = api.DeclaredFile{Type: f.typ, SizeBytes: int64(len(f.gz))}
 	}
 	create := api.CreateRequest{
-		Repo:        req.Repo,
-		CommitSHA:   req.Commit,
-		CheckName:   req.Check,
-		BuildURL:    req.BuildURL,
-		Files:       declared,
-		Branch:      req.Branch,
-		Variant:     req.Variant,
-		ExitCode:    &req.ExitCode,
-		FailedTests: result.Failures,
+		Repo:              req.Repo,
+		CommitSHA:         req.Commit,
+		CheckName:         req.Check,
+		BuildURL:          req.BuildURL,
+		Files:             declared,
+		Branch:            req.Branch,
+		PullRequestNumber: req.PullRequest,
+		Variant:           req.Variant,
+		ExitCode:          &req.ExitCode,
+		FailedTests:       result.Failures,
 	}
 	if len(req.JUnitPaths) > 0 {
 		create.JUnitComplete = &result.JUnitComplete
@@ -141,6 +143,9 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) (Resul
 	}
 
 	confirm := func(ids []int64) (*api.CompleteResponse, error) {
+		if req.ExitCode == 0 {
+			return client.CompleteUploads(ctx, ids)
+		}
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), confirmTimeout)
 		defer cancel()
 		return client.CompleteUploads(ctx, ids)
@@ -218,10 +223,6 @@ func prepare(req Request, logf Logf) ([]file, Result, error) {
 		for _, f := range report.Failures {
 			switch {
 			case seen[f]:
-			case utf8.RuneCountInString(f.Classname) > MaxTestNameChars ||
-				utf8.RuneCountInString(f.Name) > MaxTestNameChars:
-				logf("not sending a failed test with a name over %d characters", MaxTestNameChars)
-				result.JUnitComplete = false
 			case len(result.Failures) >= MaxFailedTests:
 				result.JUnitComplete = false
 			default:

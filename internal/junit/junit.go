@@ -9,10 +9,12 @@ import (
 	"strings"
 )
 
-// Aviator truncates a failure's message and trace to these many characters
-// when it ingests the report. Failures sent with an upload are truncated the
-// same way, so both sides compute the same failure signature.
+// Aviator truncates a test's names, and a failure's message and trace, to
+// these many characters when it ingests the report. Failures sent with an
+// upload are truncated the same way, so both sides compute the same failure
+// signature.
 const (
+	MaxNameChars    = 4096
 	MaxMessageChars = 1024
 	MaxTraceChars   = 4096
 )
@@ -34,7 +36,7 @@ type Report struct {
 // classname takes its suite's name, as Aviator does.
 func Parse(data []byte) (Report, error) {
 	var report Report
-	dec := xml.NewDecoder(bytes.NewReader(data))
+	dec := xml.NewDecoder(bytes.NewReader(normalizeAttrs(data)))
 	var suites []string
 	root := false
 	for {
@@ -106,12 +108,38 @@ func (tc testcase) failure(suite string) (Failure, bool) {
 		classname = suite
 	}
 	return Failure{
-		Classname: classname,
-		Name:      tc.Name,
+		Classname: truncate(classname, MaxNameChars),
+		Name:      truncate(tc.Name, MaxNameChars),
 		Message:   truncate(p.Message, MaxMessageChars),
 		Trace:     truncate(strings.TrimSpace(p.Text), MaxTraceChars),
 	}, true
 }
+
+// normalizeAttrs turns literal newlines and tabs inside start tags into
+// spaces. XML parsers do that to attribute values, Aviator's included, but Go
+// doesn't. Whitespace between attributes is insignificant, and an escaped
+// "&#10;" stays a newline in both.
+func normalizeAttrs(data []byte) []byte {
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	out := make([]byte, 0, len(data))
+	var last int64
+	for {
+		start := dec.InputOffset()
+		tok, err := dec.RawToken()
+		if err != nil {
+			break
+		}
+		if _, ok := tok.(xml.StartElement); ok {
+			end := dec.InputOffset()
+			out = append(out, data[last:start]...)
+			out = append(out, tagWhitespace.Replace(string(data[start:end]))...)
+			last = end
+		}
+	}
+	return append(out, data[last:]...)
+}
+
+var tagWhitespace = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ", "\t", " ")
 
 func attr(el xml.StartElement, name string) string {
 	for _, a := range el.Attr {

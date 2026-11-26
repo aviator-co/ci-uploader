@@ -109,3 +109,22 @@ func TestDetectBranchPrefersThePullRequestBranch(t *testing.T) {
 		t.Errorf("detectBranch = %q", got)
 	}
 }
+
+func TestDetectPullRequest(t *testing.T) {
+	for _, tc := range []struct {
+		env  map[string]string
+		want int
+	}{
+		{map[string]string{"CHANGE_ID": "12"}, 12},
+		{map[string]string{"GITHUB_REF": "refs/pull/34/merge"}, 34},
+		{map[string]string{"GITHUB_REF": "refs/heads/main"}, 0},
+		{map[string]string{"BUILDKITE_PULL_REQUEST": "false"}, 0},
+		{map[string]string{"BUILDKITE_PULL_REQUEST": "56"}, 56},
+		{map[string]string{"CIRCLE_PULL_REQUEST": "https://github.com/acme/app/pull/78"}, 78},
+		{map[string]string{}, 0},
+	} {
+		if got := detectPullRequest(func(k string) string { return tc.env[k] }); got != tc.want {
+			t.Errorf("detectPullRequest(%v) = %d, want %d", tc.env, got, tc.want)
+		}
+	}
+}

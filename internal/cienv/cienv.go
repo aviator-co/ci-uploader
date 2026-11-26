@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,6 +18,9 @@ type Build struct {
 	BuildURL string
 	// The branch under test, or "" when the CI doesn't say and HEAD is detached.
 	Branch string
+	// The pull request a PR build is for, or 0. A PR from a fork's default
+	// branch has that branch's name, so Aviator needs this to tell it apart.
+	PullRequest int
 }
 
 // branchVars name the branch, most specific first: a Jenkins PR build has the
@@ -61,6 +65,9 @@ func Detect(b Build, getenv func(string) string) (Build, error) {
 	}
 	if b.Branch == "" {
 		b.Branch = detectBranch(getenv)
+	}
+	if b.PullRequest == 0 {
+		b.PullRequest = detectPullRequest(getenv)
 	}
 
 	b.Commit = strings.ToLower(strings.TrimSpace(b.Commit))
@@ -109,6 +116,32 @@ func detectBranch(getenv func(string) string) string {
 		return branch
 	}
 	return ""
+}
+
+var (
+	githubPullRef = regexp.MustCompile(`^refs/pull/(\d+)/`)
+	pullURL       = regexp.MustCompile(`/pull/(\d+)/?$`)
+)
+
+func detectPullRequest(getenv func(string) string) int {
+	candidates := []string{
+		getenv("CHANGE_ID"),
+		getenv("BUILDKITE_PULL_REQUEST"),
+		getenv("CIRCLE_PR_NUMBER"),
+	}
+	if m := githubPullRef.FindStringSubmatch(getenv("GITHUB_REF")); m != nil {
+		candidates = append(candidates, m[1])
+	}
+	if m := pullURL.FindStringSubmatch(getenv("CIRCLE_PULL_REQUEST")); m != nil {
+		candidates = append(candidates, m[1])
+	}
+	for _, v := range candidates {
+		// Buildkite says "false" outside a PR build.
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 func gitHead() string {

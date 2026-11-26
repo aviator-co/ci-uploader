@@ -61,6 +61,7 @@ from stopping before the upload.
 | `--junit` | JUnit reports to upload, as a glob such as `'reports/**/*.xml'`. Uploaded on passing builds too. Repeatable. |
 | `--variant` | Splits a test's history by environment, such as `linux`. At most 128 characters, no `\|`. |
 | `--branch` | The branch under test. Default: from the CI environment, then git. |
+| `--pull-request` | The pull request number in a PR build. Default: from `CHANGE_ID`, `GITHUB_REF`, `BUILDKITE_PULL_REQUEST` or CircleCI. |
 | `--started-at` | `upload` only: when the test command started, as Unix seconds or RFC 3339. |
 | `--repo` | `owner/name`. Default: from `GIT_URL`. |
 | `--commit` | Full SHA under test. Default: in a Jenkins PR build, the PR's head (the second parent when Jenkins merged it with its target); else `GIT_COMMIT`, then `git rev-parse HEAD`. Pass it when another CI builds a merge of the PR with its target. |

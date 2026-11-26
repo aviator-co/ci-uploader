@@ -39,17 +39,33 @@ func TestParse(t *testing.T) {
 
 func TestParseTruncatesLikeAviator(t *testing.T) {
 	long := strings.Repeat("é", MaxMessageChars+10)
-	report, err := Parse([]byte(`<testsuite name="s"><testcase classname="a" name="b"><failure message="` + long + `"/></testcase></testsuite>`))
+	longName := strings.Repeat("n", MaxNameChars+10)
+	report, err := Parse([]byte(`<testsuite name="s"><testcase classname="a" name="` + longName + `"><failure message="` + long + `"/></testcase></testsuite>`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := []rune(report.Failures[0].Message); len(got) != MaxMessageChars {
 		t.Errorf("message has %d characters", len(got))
 	}
+	if got := len(report.Failures[0].Name); got != MaxNameChars {
+		t.Errorf("name has %d characters", got)
+	}
 }
 
 func TestParseRejectsTruncatedReports(t *testing.T) {
 	if _, err := Parse([]byte(`<testsuite name="s"><testcase classname="a" name="b">`)); err == nil {
 		t.Error("no error")
+	}
+}
+
+func TestParseNormalizesAttributeWhitespace(t *testing.T) {
+	report := "<testsuite name=\"s\"><testcase classname=\"a\" name=\"b\r\nc\">" +
+		"<failure message=\"x\ny\tz&#10;w\">trace</failure></testcase></testsuite>"
+	got, err := Parse([]byte(report))
+	if err != nil || len(got.Failures) != 1 {
+		t.Fatalf("Parse = %+v, %v", got, err)
+	}
+	if f := got.Failures[0]; f.Name != "b c" || f.Message != "x y z\nw" || f.Trace != "trace" {
+		t.Errorf("failure = %+v", f)
 	}
 }

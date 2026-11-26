@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/aviator-co/ci-uploader/internal/api"
 	"github.com/aviator-co/ci-uploader/internal/cienv"
@@ -78,14 +77,12 @@ type target struct {
 	build   cienv.Build
 }
 
-// Aviator's limits on --variant.
-const maxVariantChars = 128
-
 func (t *target) register(fs *flag.FlagSet) {
 	fs.StringVar(&t.check, "check", "", "the check's name as it reports to GitHub, matching flaky_retry's retriable_checks (required)")
 	fs.Var(&t.junit, "junit", "JUnit report files to upload, as a glob such as 'reports/**/*.xml' (repeatable); uploaded on success too, for flaky tests")
 	fs.StringVar(&t.variant, "variant", "", "splits a test's history by environment, such as 'linux'; at most 128 characters, no '|' (optional)")
 	fs.StringVar(&t.build.Branch, "branch", "", "the branch under test (default: from the CI environment, then git)")
+	fs.IntVar(&t.build.PullRequest, "pull-request", 0, "the pull request number in a PR build (default: from the CI environment)")
 	fs.StringVar(&t.build.Repo, "repo", "", "owner/name of the GitHub repository (default: from GIT_URL)")
 	fs.StringVar(&t.build.Commit, "commit", "", "full SHA of the commit under test (default: the PR head in a Jenkins PR build, else GIT_COMMIT, then git HEAD)")
 	fs.StringVar(&t.build.BuildURL, "build-url", "", "URL of this build (default: BUILD_URL)")
@@ -154,10 +151,16 @@ func parseStartedAt(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil
 	}
-	if secs, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return time.Unix(secs, 0), nil
+	t, err := time.Parse(time.RFC3339, s)
+	if secs, perr := strconv.ParseInt(s, 10, 64); perr == nil {
+		t, err = time.Unix(secs, 0), nil
 	}
-	return time.Parse(time.RFC3339, s)
+	if err == nil && t.After(time.Now()) {
+		// Milliseconds read as seconds land here, and would make every report
+		// look stale.
+		return time.Time{}, fmt.Errorf("%q is in the future", s)
+	}
+	return t, err
 }
 
 // exitCodeArg finds --exit-code in args that failed to parse.
@@ -238,12 +241,6 @@ func send(t target, r outcome) {
 			}
 		}
 	}
-	variant := t.variant
-	if utf8.RuneCountInString(variant) > maxVariantChars || strings.Contains(variant, "|") {
-		warnf("--variant must be at most %d characters with no '|'; not using it", maxVariantChars)
-		variant = ""
-	}
-
 	timeout := uploadTimeout
 	if r.exitCode == 0 {
 		timeout = passingUploadTimeout
@@ -257,7 +254,8 @@ func send(t target, r outcome) {
 		Check:        t.check,
 		BuildURL:     build.BuildURL,
 		Branch:       build.Branch,
-		Variant:      variant,
+		PullRequest:  build.PullRequest,
+		Variant:      t.variant,
 		ExitCode:     r.exitCode,
 		Log:          r.log,
 		LogSize:      r.logSize,

@@ -37,8 +37,10 @@ type CreateRequest struct {
 	BuildURL  string         `json:"build_url,omitempty"`
 	Files     []DeclaredFile `json:"files"`
 	Branch    string         `json:"branch,omitempty"`
-	Variant   string         `json:"variant,omitempty"`
-	ExitCode  *int           `json:"exit_code,omitempty"`
+	// Set for a PR build, which Aviator never counts as the default branch.
+	PullRequestNumber int    `json:"pull_request_number,omitempty"`
+	Variant           string `json:"variant,omitempty"`
+	ExitCode          *int   `json:"exit_code,omitempty"`
 	// Whether every report parsed and was written by this run.
 	JUnitComplete *bool           `json:"junit_complete,omitempty"`
 	FailedTests   []junit.Failure `json:"failed_tests,omitempty"`

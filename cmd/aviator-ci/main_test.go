@@ -33,7 +33,9 @@ func TestParseStartedAt(t *testing.T) {
 	if got, err := parseStartedAt(""); err != nil || !got.IsZero() {
 		t.Errorf("empty = %v, %v", got, err)
 	}
-	if _, err := parseStartedAt("yesterday"); err == nil {
-		t.Error("no error")
+	for _, in := range []string{"yesterday", "1700000000000"} {
+		if _, err := parseStartedAt(in); err == nil {
+			t.Errorf("parseStartedAt(%q): no error", in)
+		}
 	}
 }
