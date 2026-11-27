@@ -43,6 +43,12 @@ func runRun(args []string) int {
 		err = fmt.Errorf("unexpected argument %q", fs.Arg(0))
 		fmt.Fprintf(os.Stderr, "aviator-ci: %v\n", err)
 	}
+	if err == nil {
+		if err := t.checkQuarantine(); err != nil {
+			fmt.Fprintf(os.Stderr, "aviator-ci: %v\n", err)
+			return 2
+		}
+	}
 	canUpload := err == nil
 	if !canUpload {
 		// The command still runs, so a flag this version doesn't know can't
@@ -66,7 +72,8 @@ func runRun(args []string) int {
 	switch {
 	case code != 0:
 		log, total := tail.Bytes()
-		send(t, outcome{log: log, logSize: total, exitCode: code, started: started})
+		result := send(t, outcome{log: log, logSize: total, exitCode: code, started: started})
+		return applyQuarantine(t, code, result)
 	case len(t.junit) > 0:
 		// Passing runs are half of what tells a flaky test from a broken one.
 		send(t, outcome{exitCode: code, started: started})

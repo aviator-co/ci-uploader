@@ -27,8 +27,16 @@ type Failure struct {
 	Trace     string `json:"trace,omitempty"`
 }
 
+// Case names a test case.
+type Case struct {
+	Classname string
+	Name      string
+}
+
 // Report is what one report says.
 type Report struct {
+	// Every test case, failed or not.
+	Cases    []Case
 	Failures []Failure
 }
 
@@ -62,6 +70,7 @@ func Parse(data []byte) (Report, error) {
 				if len(suites) > 0 {
 					suite = suites[len(suites)-1]
 				}
+				report.Cases = append(report.Cases, tc.key(suite))
 				if f, failed := tc.failure(suite); failed {
 					report.Failures = append(report.Failures, f)
 				}
@@ -103,16 +112,21 @@ func (tc testcase) failure(suite string) (Failure, bool) {
 	default:
 		return Failure{}, false
 	}
+	k := tc.key(suite)
+	return Failure{
+		Classname: k.Classname,
+		Name:      k.Name,
+		Message:   truncate(p.Message, MaxMessageChars),
+		Trace:     truncate(strings.TrimSpace(p.Text), MaxTraceChars),
+	}, true
+}
+
+func (tc testcase) key(suite string) Case {
 	classname := tc.Classname
 	if classname == "" {
 		classname = suite
 	}
-	return Failure{
-		Classname: truncate(classname, MaxNameChars),
-		Name:      truncate(tc.Name, MaxNameChars),
-		Message:   truncate(p.Message, MaxMessageChars),
-		Trace:     truncate(strings.TrimSpace(p.Text), MaxTraceChars),
-	}, true
+	return Case{Classname: truncate(classname, MaxNameChars), Name: truncate(tc.Name, MaxNameChars)}
 }
 
 // normalizeAttrs turns literal newlines and tabs inside start tags into

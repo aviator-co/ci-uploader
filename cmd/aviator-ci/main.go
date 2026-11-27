@@ -15,6 +15,7 @@ import (
 
 	"github.com/aviator-co/ci-uploader/internal/api"
 	"github.com/aviator-co/ci-uploader/internal/cienv"
+	"github.com/aviator-co/ci-uploader/internal/quarantine"
 	"github.com/aviator-co/ci-uploader/internal/upload"
 )
 
@@ -26,6 +27,7 @@ var Version = "dev"
 const (
 	uploadTimeout        = 2 * time.Minute
 	passingUploadTimeout = 15 * time.Second
+	appliedTimeout       = 10 * time.Second
 )
 
 const usage = `Usage: aviator-ci <command> [flags]
@@ -71,16 +73,22 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // target is what every command needs to know about the check.
 type target struct {
-	check   string
-	junit   stringList
-	variant string
-	build   cienv.Build
+	check      string
+	junit      stringList
+	variant    string
+	quarantine bool
+	exitCodes  string
+	// Parsed from exitCodes by checkQuarantine.
+	codes []int
+	build cienv.Build
 }
 
 func (t *target) register(fs *flag.FlagSet) {
 	fs.StringVar(&t.check, "check", "", "the check's name as it reports to GitHub, matching flaky_retry's retriable_checks (required)")
 	fs.Var(&t.junit, "junit", "JUnit report files to upload, as a glob such as 'reports/**/*.xml' (repeatable); uploaded on success too, for flaky tests")
 	fs.StringVar(&t.variant, "variant", "", "splits a test's history by environment, such as 'linux'; at most 128 characters, no '|' (optional)")
+	fs.BoolVar(&t.quarantine, "quarantine", false, "exit 0 when every failed test is quarantined in Aviator (needs --junit; wrap a single test runner, not a build tool or a fail-fast run)")
+	fs.StringVar(&t.exitCodes, "quarantine-exit-codes", "1", "exit codes that mean tests failed, which --quarantine may turn into 0, comma-separated")
 	fs.StringVar(&t.build.Branch, "branch", "", "the branch under test (default: from the CI environment, then git)")
 	fs.IntVar(&t.build.PullRequest, "pull-request", 0, "the pull request number in a PR build (default: from the CI environment)")
 	fs.StringVar(&t.build.Repo, "repo", "", "owner/name of the GitHub repository (default: from GIT_URL)")
@@ -93,7 +101,7 @@ func runUpload(args []string) int {
 	var t target
 	t.register(fs)
 	logPath := fs.String("log", "", "the failed command's output")
-	exitCode := fs.Int("exit-code", -1, "the test command's exit code, which aviator-ci exits with; 0 uploads only the JUnit reports (required)")
+	exitCode := fs.Int("exit-code", -1, "the test command's exit code, which aviator-ci exits with unless --quarantine passes the build; 0 uploads only the JUnit reports (required)")
 	startedAt := fs.String("started-at", "", "when the test command started, as Unix seconds or RFC 3339; reports older than this are left out (required with --junit)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: aviator-ci upload --check <name> --log <file> --exit-code <code> [flags]\n\n")
@@ -129,6 +137,10 @@ func runUpload(args []string) int {
 		}
 		return 2
 	}
+	if err := t.checkQuarantine(); err != nil {
+		warnf("%v; keeping the exit code", err)
+		t.quarantine = false
+	}
 	started, err := parseStartedAt(*startedAt)
 	if err != nil {
 		warnf("--started-at: %v; treating the reports as incomplete", err)
@@ -139,8 +151,6 @@ func runUpload(args []string) int {
 		}
 		return 0
 	}
-	*exitCode = failureCode(*exitCode)
-
 	var log []byte
 	var size int64
 	if *logPath != "" {
@@ -148,8 +158,8 @@ func runUpload(args []string) int {
 			warnf("could not read the log: %v", err)
 		}
 	}
-	send(t, outcome{log: log, logSize: size, exitCode: *exitCode, started: started})
-	return *exitCode
+	result := send(t, outcome{log: log, logSize: size, exitCode: failureCode(*exitCode), started: started})
+	return applyQuarantine(t, *exitCode, result)
 }
 
 func parseStartedAt(s string) (time.Time, error) {
@@ -210,20 +220,20 @@ type outcome struct {
 
 // send uploads whatever it can and only ever warns, so a problem here never
 // changes the build's result.
-func send(t target, r outcome) {
+func send(t target, r outcome) upload.Result {
 	if t.check == "" {
 		warnf("--check is required; not uploading")
-		return
+		return upload.Result{}
 	}
 	token := os.Getenv("AVIATOR_API_TOKEN")
 	if token == "" {
 		warnf("AVIATOR_API_TOKEN is not set; not uploading")
-		return
+		return upload.Result{}
 	}
 	build, err := cienv.Detect(t.build, os.Getenv)
 	if err != nil {
 		warnf("%v; not uploading", err)
-		return
+		return upload.Result{}
 	}
 	var junit []string
 	missing := false
@@ -231,11 +241,10 @@ func send(t target, r outcome) {
 	for _, pattern := range t.junit {
 		paths, err := upload.Glob(pattern)
 		if err != nil {
-			warnf("bad --junit pattern %q: %v", pattern, err)
+			// Unreadable directories may hold a report; what did match still goes.
+			warnf("--junit %q: %v", pattern, err)
 			missing = true
-			continue
-		}
-		if len(paths) == 0 {
+		} else if len(paths) == 0 {
 			warnf("--junit %q matched no reports", pattern)
 			missing = true
 		}
@@ -253,7 +262,7 @@ func send(t target, r outcome) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	client := api.New(os.Getenv("AVIATOR_API_HOST"), token, "aviator-ci/"+Version)
-	_, err = upload.Run(ctx, client, upload.Request{
+	result, err := upload.Run(ctx, client, upload.Request{
 		Repo:         build.Repo,
 		Commit:       build.Commit,
 		Check:        t.check,
@@ -271,6 +280,53 @@ func send(t target, r outcome) {
 	}, infof)
 	if err != nil {
 		warnf("upload failed: %v", err)
+	}
+	return result
+}
+
+func (t *target) checkQuarantine() error {
+	if !t.quarantine {
+		return nil
+	}
+	if len(t.junit) == 0 {
+		return errors.New("--quarantine needs --junit")
+	}
+	codes, err := quarantine.ParseExitCodes(t.exitCodes)
+	if err != nil {
+		return fmt.Errorf("--quarantine-exit-codes: %w", err)
+	}
+	t.codes = codes
+	return nil
+}
+
+// applyQuarantine returns 0 when --quarantine is on and every failure is
+// quarantined, and the failing exit code otherwise. It decides on code as
+// given, so a negative one never counts as a test failure.
+func applyQuarantine(t target, code int, result upload.Result) int {
+	if !t.quarantine {
+		return failureCode(code)
+	}
+	d := quarantine.Decide(code, t.codes, result.JUnitComplete, result.ReportsConfirmed, result.Failures, result.Quarantine)
+	if d.Pass {
+		infof("passing the build: %s", d.Reason)
+		reportApplied(result.TestRunID)
+		return 0
+	}
+	infof("keeping exit code %d: %s", failureCode(code), d.Reason)
+	return failureCode(code)
+}
+
+// reportApplied tells Aviator the build passed on its answer. Without it,
+// Aviator takes the check's failure as the tests', which only costs it a retry.
+func reportApplied(testRunID *int64) {
+	if testRunID == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), appliedTimeout)
+	defer cancel()
+	client := api.New(os.Getenv("AVIATOR_API_HOST"), os.Getenv("AVIATOR_API_TOKEN"), "aviator-ci/"+Version)
+	if err := client.QuarantineApplied(ctx, *testRunID); err != nil {
+		warnf("could not tell Aviator the build passed on quarantine: %v", err)
 	}
 }
 

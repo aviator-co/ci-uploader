@@ -46,8 +46,11 @@ type CreateRequest struct {
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	// Whether every report parsed and was written by this run.
-	JUnitComplete *bool           `json:"junit_complete,omitempty"`
-	FailedTests   []junit.Failure `json:"failed_tests,omitempty"`
+	JUnitComplete *bool `json:"junit_complete,omitempty"`
+	// Distinct test cases across the reports, so Aviator can refuse to
+	// quarantine a run that ran fewer tests than usual.
+	TestCount   *int            `json:"test_count,omitempty"`
+	FailedTests []junit.Failure `json:"failed_tests,omitempty"`
 }
 
 type Slot struct {
@@ -66,14 +69,16 @@ type CreateResponse struct {
 	Files       []Slot  `json:"files"`
 	// Set when Aviator tracks this repository's tests.
 	Quarantine *Quarantine `json:"quarantine"`
+	TestRunID  *int64      `json:"test_run_id"`
 }
 
 // Quarantine says which of the failed tests are quarantined.
 type Quarantine struct {
-	// "enforce" lets quarantined failures pass the build; "shadow" only
-	// reports them.
-	Mode  string    `json:"mode"`
+	// Tests whose failures may pass the build.
 	Tests []TestRef `json:"tests"`
+	// In shadow mode, the tests that would have been quarantined. Tests is
+	// then empty.
+	ShadowTests []TestRef `json:"shadow_tests"`
 }
 
 type TestRef struct {
@@ -148,6 +153,13 @@ func (c *Client) CompleteUploads(ctx context.Context, ids []int64) (*CompleteRes
 		return nil, err
 	}
 	return &out, nil
+}
+
+// QuarantineApplied tells Aviator the build passed on its quarantine answer,
+// so a later failure of the check is put down to another step.
+func (c *Client) QuarantineApplied(ctx context.Context, testRunID int64) error {
+	var out map[string]any
+	return c.postJSON(ctx, fmt.Sprintf("/api/v1/ci/uploads/runs/%d/quarantine", testRunID), map[string]bool{"applied": true}, &out)
 }
 
 // Put uploads body to a signed URL from CreateUploads.

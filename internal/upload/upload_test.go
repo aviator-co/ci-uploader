@@ -27,6 +27,7 @@ type fakeAviator struct {
 	// no index, as an older Aviator does.
 	want     []int
 	refuse   map[int64]bool // PUTs answered 403 without storing
+	lose     map[int64]bool // PUTs answered 200 and never stored
 	mu       sync.Mutex
 	declared api.CreateRequest
 	stored   map[int64][]byte
@@ -76,7 +77,9 @@ func (f *fakeAviator) handler(srv **httptest.Server) http.Handler {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		f.stored[id] = body
+		if !f.lose[id] {
+			f.stored[id] = body
+		}
 	})
 	mux.HandleFunc("POST /api/v1/ci/uploads/complete", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ IDs []int64 }
@@ -347,5 +350,31 @@ func TestRunSendsTheRunsTimes(t *testing.T) {
 	if f.declared.StartedAt == nil || !f.declared.StartedAt.Equal(req.Since) ||
 		f.declared.FinishedAt == nil || !f.declared.FinishedAt.Equal(req.Finished) {
 		t.Errorf("times %v %v", f.declared.StartedAt, f.declared.FinishedAt)
+	}
+}
+
+func TestRunCountsTestCasesAndConfirmsReports(t *testing.T) {
+	report := `<testsuite name="s"><testcase classname="a" name="x"/><testcase name="y"><failure/></testcase></testsuite>`
+	f, client := newFake(t)
+	req := request(t, report, report)
+	req.ExitCode = 1
+	result, err := Run(t.Context(), client, req, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TestCount != 2 || f.declared.TestCount == nil || *f.declared.TestCount != 2 {
+		t.Errorf("test count %d, declared %v", result.TestCount, f.declared.TestCount)
+	}
+	if !result.ReportsConfirmed {
+		t.Error("reports not confirmed")
+	}
+
+	f, client = newFake(t)
+	f.lose = map[int64]bool{102: true}
+	if result, err = Run(t.Context(), client, req, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	if result.ReportsConfirmed {
+		t.Error("a lost report counted as confirmed")
 	}
 }
