@@ -57,7 +57,7 @@ func TestGlobReportsUnreadableDirectories(t *testing.T) {
 	if err := os.Chmod("reports/locked", 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod("reports/locked", 0o750) }) //nolint:gosec // restores the test's own directory
+	t.Cleanup(func() { _ = os.Chmod("reports/locked", 0o750) })
 	for _, pattern := range []string{"reports/**/*.xml", "reports/*/*.xml"} {
 		got, err := Glob(pattern)
 		if err == nil {
