@@ -83,8 +83,10 @@ Notes for `run`:
 With `--quarantine`, a failed build exits 0 only when all of these hold:
 
 - the repository's `flaky_tests.quarantine.shadow_mode` is `false`;
-- every JUnit report parsed, and was written after the command started (for
-  `upload`, that needs `--started-at`);
+- every JUnit report parsed, was written after the command started, and
+  uploaded to Aviator;
+- the run reported no fewer tests than the check's recent runs, when those
+  all reported about the same number;
 - the reports show at least one failed test, and every one is quarantined;
 - the exit code is one of `--quarantine-exit-codes`.
 
@@ -92,10 +94,12 @@ Otherwise, and whenever Aviator can't be reached, it keeps the real exit code.
 In shadow mode it prints which failures would have been quarantined.
 
 These checks can only see the tests that reported. So wrap a single test
-runner invocation, whose failing exit code means only "tests failed":
+runner invocation, whose failing exit code means only "tests failed", and make
+`--junit` match only the reports that command writes. A broader glob can pick
+up another step's reports from the same workspace:
 
 ```bash
-aviator-ci run --check ci/tests --junit 'reports/*.xml' --quarantine -- pytest --junitxml=reports/unit.xml
+aviator-ci run --check ci/tests --junit reports/unit.xml --quarantine -- pytest --junitxml=reports/unit.xml
 ```
 
 Don't use `--quarantine` around:

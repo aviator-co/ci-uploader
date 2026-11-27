@@ -65,7 +65,12 @@ type Result struct {
 	// Every report was found, parsed, and written after Since, and every
 	// failure fits what Aviator accepts.
 	JUnitComplete bool
-	Quarantine    *api.Quarantine
+	// Distinct test cases across the reports.
+	TestCount  int
+	Quarantine *api.Quarantine
+	// Every report Aviator wanted was uploaded and confirmed.
+	ReportsConfirmed bool
+	TestRunID        *int64
 }
 
 type Logf func(format string, args ...any)
@@ -107,6 +112,7 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) (Resul
 	}
 	if len(req.JUnitPaths) > 0 {
 		create.JUnitComplete = &result.JUnitComplete
+		create.TestCount = &result.TestCount
 	}
 	if !req.Since.IsZero() && !req.Finished.IsZero() {
 		create.StartedAt, create.FinishedAt = &req.Since, &req.Finished
@@ -116,6 +122,7 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) (Resul
 		return result, fmt.Errorf("declaring uploads: %w", err)
 	}
 	result.Quarantine = created.Quarantine
+	result.TestRunID = created.TestRunID
 	if created.Skipped != nil {
 		logf("not uploading: %s", *created.Skipped)
 		return result, nil
@@ -179,6 +186,16 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) (Resul
 	for _, id := range done.Rejected {
 		logf("%s was rejected for its size", files[byID[id].file].name)
 	}
+	uploaded := map[int64]bool{}
+	for _, id := range done.Uploaded {
+		uploaded[id] = true
+	}
+	result.ReportsConfirmed = true
+	for _, s := range slots {
+		if files[s.file].typ == api.FileTypeJUnit && !uploaded[s.ID] {
+			result.ReportsConfirmed = false
+		}
+	}
 	if n := len(done.Uploaded); n > 0 {
 		logf("uploaded %d file(s) for %q", n, req.Check)
 	}
@@ -232,6 +249,7 @@ func prepare(req Request, logf Logf) ([]file, Result, error) {
 		result.JUnitComplete = false
 	}
 	seen := map[junit.Failure]bool{}
+	cases := map[junit.Case]bool{}
 	for _, path := range paths {
 		info, err := os.Stat(path)
 		if err == nil && !req.Since.IsZero() && info.ModTime().Before(req.Since) {
@@ -254,6 +272,9 @@ func prepare(req Request, logf Logf) ([]file, Result, error) {
 			logf("could not read %s as JUnit: %v", path, err)
 			result.JUnitComplete = false
 		}
+		for _, c := range report.Cases {
+			cases[c] = true
+		}
 		for _, f := range report.Failures {
 			switch {
 			case seen[f]:
@@ -275,6 +296,7 @@ func prepare(req Request, logf Logf) ([]file, Result, error) {
 		}
 		files = append(files, file{typ: api.FileTypeJUnit, name: path, gz: gz})
 	}
+	result.TestCount = len(cases)
 	return files, result, nil
 }
 

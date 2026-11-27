@@ -27,6 +27,7 @@ var Version = "dev"
 const (
 	uploadTimeout        = 2 * time.Minute
 	passingUploadTimeout = 15 * time.Second
+	appliedTimeout       = 10 * time.Second
 )
 
 const usage = `Usage: aviator-ci <command> [flags]
@@ -305,13 +306,28 @@ func applyQuarantine(t target, code int, result upload.Result) int {
 	if !t.quarantine {
 		return failureCode(code)
 	}
-	d := quarantine.Decide(code, t.codes, result.JUnitComplete, result.Failures, result.Quarantine)
+	d := quarantine.Decide(code, t.codes, result.JUnitComplete, result.ReportsConfirmed, result.Failures, result.Quarantine)
 	if d.Pass {
 		infof("passing the build: %s", d.Reason)
+		reportApplied(result.TestRunID)
 		return 0
 	}
 	infof("keeping exit code %d: %s", failureCode(code), d.Reason)
 	return failureCode(code)
+}
+
+// reportApplied tells Aviator the build passed on its answer. Without it,
+// Aviator takes the check's failure as the tests', which only costs it a retry.
+func reportApplied(testRunID *int64) {
+	if testRunID == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), appliedTimeout)
+	defer cancel()
+	client := api.New(os.Getenv("AVIATOR_API_HOST"), os.Getenv("AVIATOR_API_TOKEN"), "aviator-ci/"+Version)
+	if err := client.QuarantineApplied(ctx, *testRunID); err != nil {
+		warnf("could not tell Aviator the build passed on quarantine: %v", err)
+	}
 }
 
 func infof(format string, args ...any) {

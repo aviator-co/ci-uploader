@@ -68,3 +68,50 @@ func TestGlobReportsUnreadableDirectories(t *testing.T) {
 		}
 	}
 }
+
+func TestGlobFollowsSymlinksAndCleansThePrefix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	dir := t.TempDir()
+	t.Chdir(dir)
+	for _, p := range []string{"out/testlogs/pkg/target/test.xml", "reports/a.xml"} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// As Bazel links bazel-testlogs, plus a link inside a directory and a loop.
+	for link, target := range map[string]string{
+		"bazel-testlogs": "out/testlogs",
+		"reports/pkg":    "../out/testlogs/pkg",
+		"reports/loop":   "..",
+	} {
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for pattern, want := range map[string][]string{
+		"bazel-testlogs/*/*/test.xml": {"bazel-testlogs/pkg/target/test.xml"},
+		"reports//*.xml":              {"reports/a.xml"},
+		"./reports/./*.xml":           {"reports/a.xml"},
+		"reports/pkg/**/test.xml":     {"reports/pkg/target/test.xml"},
+	} {
+		got, err := Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range got {
+			got[i] = filepath.ToSlash(got[i])
+		}
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("Glob(%q) = %v, want %v", pattern, got, want)
+		}
+	}
+	if _, err := Glob("reports/**/*.xml"); err != nil {
+		t.Errorf("a symlink loop: %v", err)
+	}
+}

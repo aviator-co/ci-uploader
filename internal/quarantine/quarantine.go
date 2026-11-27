@@ -18,10 +18,10 @@ type Decision struct {
 	Reason string
 }
 
-// Decide passes the build only when Aviator quarantines every failure, the reports
-// were complete, the exit code means "tests failed", and every failure is
-// quarantined. Anything else keeps the real result.
-func Decide(code int, exitCodes []int, complete bool, failures []junit.Failure, q *api.Quarantine) Decision {
+// Decide passes the build only when the reports were complete and all reached
+// Aviator, the exit code means "tests failed", and Aviator quarantines every
+// failure. Anything else keeps the real result.
+func Decide(code int, exitCodes []int, complete, confirmed bool, failures []junit.Failure, q *api.Quarantine) Decision {
 	switch {
 	case q == nil:
 		return Decision{Reason: "Aviator did not answer with a quarantine decision"}
@@ -29,6 +29,8 @@ func Decide(code int, exitCodes []int, complete bool, failures []junit.Failure, 
 		return Decision{Reason: "the JUnit reports show no failed test, so something else failed"}
 	case !complete:
 		return Decision{Reason: "a JUnit report was missing, stale or unreadable"}
+	case !confirmed:
+		return Decision{Reason: "a JUnit report did not upload to Aviator"}
 	case !slices.Contains(exitCodes, code):
 		return Decision{Reason: fmt.Sprintf("exit code %d is not a test failure (--quarantine-exit-codes)", code)}
 	}
