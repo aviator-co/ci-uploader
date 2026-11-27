@@ -29,12 +29,13 @@ func TestDetect(t *testing.T) {
 		"GIT_URL":    "https://github.com/acme/app.git",
 		"GIT_COMMIT": strings.ToUpper(sha),
 		"BUILD_URL":  "https://jenkins/job/app/42/",
+		"GIT_BRANCH": "origin/main",
 	}
 	b, err := Detect(Build{}, func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b != (Build{Repo: "acme/app", Commit: sha, BuildURL: "https://jenkins/job/app/42/"}) {
+	if b != (Build{Repo: "acme/app", Commit: sha, BuildURL: "https://jenkins/job/app/42/", Branch: "main"}) {
 		t.Errorf("Detect = %+v", b)
 	}
 
@@ -99,5 +100,31 @@ func TestDetectJenkinsMergedPullRequest(t *testing.T) {
 	b, err = Detect(Build{}, func(k string) string { return env[k] })
 	if err != nil || b.Commit != merge {
 		t.Errorf("branch build: commit %s (%v), want GIT_COMMIT %s", b.Commit, err, merge)
+	}
+}
+
+func TestDetectBranchPrefersThePullRequestBranch(t *testing.T) {
+	env := map[string]string{"CHANGE_BRANCH": "feature", "BRANCH_NAME": "PR-12"}
+	if got := detectBranch(func(k string) string { return env[k] }); got != "feature" {
+		t.Errorf("detectBranch = %q", got)
+	}
+}
+
+func TestDetectPullRequest(t *testing.T) {
+	for _, tc := range []struct {
+		env  map[string]string
+		want int
+	}{
+		{map[string]string{"CHANGE_ID": "12"}, 12},
+		{map[string]string{"GITHUB_REF": "refs/pull/34/merge"}, 34},
+		{map[string]string{"GITHUB_REF": "refs/heads/main"}, 0},
+		{map[string]string{"BUILDKITE_PULL_REQUEST": "false"}, 0},
+		{map[string]string{"BUILDKITE_PULL_REQUEST": "56"}, 56},
+		{map[string]string{"CIRCLE_PULL_REQUEST": "https://github.com/acme/app/pull/78"}, 78},
+		{map[string]string{}, 0},
+	} {
+		if got := detectPullRequest(func(k string) string { return tc.env[k] }); got != tc.want {
+			t.Errorf("detectPullRequest(%v) = %d, want %d", tc.env, got, tc.want)
+		}
 	}
 }

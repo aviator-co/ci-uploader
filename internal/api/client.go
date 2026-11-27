@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/aviator-co/ci-uploader/internal/junit"
 )
 
 const DefaultHost = "https://api.aviator.co"
@@ -34,9 +36,24 @@ type CreateRequest struct {
 	CheckName string         `json:"check_name"`
 	BuildURL  string         `json:"build_url,omitempty"`
 	Files     []DeclaredFile `json:"files"`
+	Branch    string         `json:"branch,omitempty"`
+	// Set for a PR build, which Aviator never counts as the default branch.
+	PullRequestNumber int    `json:"pull_request_number,omitempty"`
+	Variant           string `json:"variant,omitempty"`
+	ExitCode          *int   `json:"exit_code,omitempty"`
+	// When the test command started and finished, so Aviator pairs a retry
+	// only with a run that finished before it started.
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	// Whether every report parsed and was written by this run.
+	JUnitComplete *bool           `json:"junit_complete,omitempty"`
+	FailedTests   []junit.Failure `json:"failed_tests,omitempty"`
 }
 
 type Slot struct {
+	// The declared file's position. Aviator only hands out URLs for the files
+	// it will read.
+	Index     *int     `json:"index"`
 	ID        int64    `json:"id"`
 	Type      FileType `json:"type"`
 	UploadURL string   `json:"upload_url"`
@@ -47,6 +64,21 @@ type CreateResponse struct {
 	Skipped     *string `json:"skipped"`
 	ContentType string  `json:"content_type"`
 	Files       []Slot  `json:"files"`
+	// Set when Aviator tracks this repository's tests.
+	Quarantine *Quarantine `json:"quarantine"`
+}
+
+// Quarantine says which of the failed tests are quarantined.
+type Quarantine struct {
+	// "enforce" lets quarantined failures pass the build; "shadow" only
+	// reports them.
+	Mode  string    `json:"mode"`
+	Tests []TestRef `json:"tests"`
+}
+
+type TestRef struct {
+	Classname string `json:"classname"`
+	Name      string `json:"name"`
 }
 
 type CompleteResponse struct {

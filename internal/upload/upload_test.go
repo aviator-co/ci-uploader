@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,8 +21,11 @@ import (
 
 // fakeAviator serves the upload API and the signed URLs it hands out.
 type fakeAviator struct {
-	t        *testing.T
-	skipped  *string
+	t       *testing.T
+	skipped *string
+	// Indexes of the declared files to hand out URLs for; nil for all, with
+	// no index, as an older Aviator does.
+	want     []int
 	refuse   map[int64]bool // PUTs answered 403 without storing
 	mu       sync.Mutex
 	declared api.CreateRequest
@@ -46,7 +50,14 @@ func (f *fakeAviator) handler(srv **httptest.Server) http.Handler {
 		if f.skipped == nil {
 			for i, d := range f.declared.Files {
 				id := int64(100 + i)
-				resp.Files = append(resp.Files, api.Slot{ID: id, Type: d.Type, UploadURL: (*srv).URL + "/put/" + itoa(id)})
+				s := api.Slot{ID: id, Type: d.Type, UploadURL: (*srv).URL + "/put/" + itoa(id)}
+				if f.want != nil {
+					if !slices.Contains(f.want, i) {
+						continue
+					}
+					s.Index = &i
+				}
+				resp.Files = append(resp.Files, s)
 			}
 		}
 		_ = json.NewEncoder(w).Encode(resp)
@@ -132,7 +143,7 @@ func request(t *testing.T, junit ...string) Request {
 
 func TestRunUploadsAndConfirms(t *testing.T) {
 	f, client := newFake(t)
-	if err := Run(t.Context(), client, request(t, "<testsuite/>"), t.Logf); err != nil {
+	if _, err := Run(t.Context(), client, request(t, "<testsuite/>"), t.Logf); err != nil {
 		t.Fatal(err)
 	}
 
@@ -161,7 +172,7 @@ func TestRunSkipped(t *testing.T) {
 	f, client := newFake(t)
 	reason := "not a draft PR"
 	f.skipped = &reason
-	if err := Run(t.Context(), client, request(t), t.Logf); err != nil {
+	if _, err := Run(t.Context(), client, request(t), t.Logf); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.puts) != 0 || len(f.confirms) != 0 {
@@ -174,7 +185,7 @@ func TestRunSkipped(t *testing.T) {
 func TestRunReuploadsWhatIsMissing(t *testing.T) {
 	f, client := newFake(t)
 	f.refuse[100] = true
-	if err := Run(t.Context(), client, request(t), t.Logf); err != nil {
+	if _, err := Run(t.Context(), client, request(t), t.Logf); err != nil {
 		t.Fatal(err)
 	}
 	if f.puts[100] != 2 {
@@ -192,7 +203,7 @@ func TestRunNothingToUpload(t *testing.T) {
 	f, client := newFake(t)
 	req := request(t)
 	req.Log = nil
-	if err := Run(t.Context(), client, req, t.Logf); err != nil {
+	if _, err := Run(t.Context(), client, req, t.Logf); err != nil {
 		t.Fatal(err)
 	}
 	if f.declared.CheckName != "" {
@@ -225,4 +236,116 @@ func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 func atoi(s string) int64 {
 	n, _ := strconv.ParseInt(s, 10, 64)
 	return n
+}
+
+func TestRunSendsTheFailedTests(t *testing.T) {
+	f, client := newFake(t)
+	report := `<testsuite name="s"><testcase classname="a" name="ok"/>` +
+		`<testcase classname="a" name="bad"><failure message="nope"/></testcase></testsuite>`
+	result, err := Run(t.Context(), client, request(t, report, "not xml"), t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.declared.FailedTests) != 1 || f.declared.FailedTests[0].Name != "bad" {
+		t.Errorf("failed tests %+v", f.declared.FailedTests)
+	}
+	if f.declared.JUnitComplete == nil || *f.declared.JUnitComplete || result.JUnitComplete {
+		t.Error("a report that doesn't parse should make the run incomplete")
+	}
+}
+
+func TestRunLeavesOutStaleReports(t *testing.T) {
+	f, client := newFake(t)
+	req := request(t, "<testsuite/>")
+	req.Since = time.Now().Add(time.Hour)
+	result, err := Run(t.Context(), client, req, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.declared.Files) != 1 || f.declared.Files[0].Type != api.FileTypeLog {
+		t.Errorf("declared %+v", f.declared.Files)
+	}
+	if result.JUnitComplete {
+		t.Error("a stale report should make the run incomplete")
+	}
+}
+
+func TestRunCompleteness(t *testing.T) {
+	f, client := newFake(t)
+	report := `<testsuite name="s"><testcase classname="a" name="ok"/></testsuite>`
+	for _, tc := range []struct {
+		name     string
+		since    time.Time
+		missing  bool
+		complete bool
+	}{
+		{"start time known", time.Now().Add(-time.Hour), false, true},
+		{"start time unknown", time.Time{}, false, false},
+		{"a pattern matched nothing", time.Now().Add(-time.Hour), true, false},
+	} {
+		req := request(t, report)
+		req.Since = tc.since
+		req.JUnitMissing = tc.missing
+		result, err := Run(t.Context(), client, req, t.Logf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.JUnitComplete != tc.complete || *f.declared.JUnitComplete != tc.complete {
+			t.Errorf("%s: complete = %v", tc.name, result.JUnitComplete)
+		}
+	}
+}
+
+func TestRunSendsEachDistinctFailureUpToTheLimit(t *testing.T) {
+	f, client := newFake(t)
+	var cases strings.Builder
+	// The same test failing two ways, as a retry plugin reports it, then more
+	// failures than Aviator accepts.
+	cases.WriteString(`<testcase classname="a" name="retried"><failure message="timeout"/></testcase>`)
+	cases.WriteString(`<testcase classname="a" name="retried"><failure message="assertion"/></testcase>`)
+	for i := range MaxFailedTests {
+		cases.WriteString(`<testcase classname="a" name="t` + itoa(int64(i)) + `"><failure/></testcase>`)
+	}
+	req := request(t, `<testsuite name="s">`+cases.String()+`</testsuite>`)
+	req.Since = time.Now().Add(-time.Hour)
+	result, err := Run(t.Context(), client, req, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.declared.FailedTests) != MaxFailedTests {
+		t.Errorf("sent %d failed tests", len(f.declared.FailedTests))
+	}
+	if f.declared.FailedTests[1].Message != "assertion" {
+		t.Errorf("second failure of the retried test was dropped: %+v", f.declared.FailedTests[:2])
+	}
+	if result.JUnitComplete {
+		t.Error("going past the limit should make the run incomplete")
+	}
+}
+
+func TestRunUploadsOnlyTheFilesAviatorWants(t *testing.T) {
+	f, client := newFake(t)
+	f.want = []int{1}
+	req := request(t, `<testsuite><testcase classname="a" name="b"/></testsuite>`)
+	req.ExitCode = 1
+	if _, err := Run(t.Context(), client, req, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.stored) != 1 || f.stored[101] == nil {
+		t.Errorf("stored %v, want only the report", f.stored)
+	}
+}
+
+func TestRunSendsTheRunsTimes(t *testing.T) {
+	f, client := newFake(t)
+	req := request(t)
+	req.Since = time.Unix(1700000000, 0)
+	req.Finished = req.Since.Add(time.Minute)
+	if _, err := Run(t.Context(), client, req, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	if f.declared.StartedAt == nil || !f.declared.StartedAt.Equal(req.Since) ||
+		f.declared.FinishedAt == nil || !f.declared.FinishedAt.Equal(req.Finished) {
+		t.Errorf("times %v %v", f.declared.StartedAt, f.declared.FinishedAt)
+	}
 }

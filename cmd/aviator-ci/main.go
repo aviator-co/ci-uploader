@@ -1,5 +1,6 @@
-// Command aviator-ci uploads a failed CI check's output to Aviator, so its
-// merge queue can tell flaky failures from real ones.
+// Command aviator-ci uploads CI test results to Aviator: a failed check's
+// output, so its merge queue can tell flaky failures from real ones, and JUnit
+// reports from every run, for flaky test detection.
 package main
 
 import (
@@ -20,14 +21,18 @@ import (
 // Version is set at release time.
 var Version = "dev"
 
-// The whole upload, so a slow API never holds up the build for long.
-const uploadTimeout = 2 * time.Minute
+// The whole upload, so a slow API never holds up the build for long. A passing
+// build only sends history, so it waits less.
+const (
+	uploadTimeout        = 2 * time.Minute
+	passingUploadTimeout = 15 * time.Second
+)
 
 const usage = `Usage: aviator-ci <command> [flags]
 
 Commands:
-  run      Run a test command and upload its output if it fails
-  upload   Upload a log after a failed test command
+  run      Run a test command and upload its JUnit reports, and its output if it fails
+  upload   Upload JUnit reports, and a log after a failed test command
   version  Print the version
 
 Set AVIATOR_API_TOKEN to an Aviator API token. For self-hosted Aviator, set
@@ -64,16 +69,20 @@ type stringList []string
 func (s *stringList) String() string     { return strings.Join(*s, ",") }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
-// target is what every command needs to know about the failed check.
+// target is what every command needs to know about the check.
 type target struct {
-	check string
-	junit stringList
-	build cienv.Build
+	check   string
+	junit   stringList
+	variant string
+	build   cienv.Build
 }
 
 func (t *target) register(fs *flag.FlagSet) {
 	fs.StringVar(&t.check, "check", "", "the check's name as it reports to GitHub, matching flaky_retry's retriable_checks (required)")
-	fs.Var(&t.junit, "junit", "JUnit report files to upload too, as a glob such as 'reports/**/*.xml' (repeatable)")
+	fs.Var(&t.junit, "junit", "JUnit report files to upload, as a glob such as 'reports/**/*.xml' (repeatable); uploaded on success too, for flaky tests")
+	fs.StringVar(&t.variant, "variant", "", "splits a test's history by environment, such as 'linux'; at most 128 characters, no '|' (optional)")
+	fs.StringVar(&t.build.Branch, "branch", "", "the branch under test (default: from the CI environment, then git)")
+	fs.IntVar(&t.build.PullRequest, "pull-request", 0, "the pull request number in a PR build (default: from the CI environment)")
 	fs.StringVar(&t.build.Repo, "repo", "", "owner/name of the GitHub repository (default: from GIT_URL)")
 	fs.StringVar(&t.build.Commit, "commit", "", "full SHA of the commit under test (default: the PR head in a Jenkins PR build, else GIT_COMMIT, then git HEAD)")
 	fs.StringVar(&t.build.BuildURL, "build-url", "", "URL of this build (default: BUILD_URL)")
@@ -84,7 +93,8 @@ func runUpload(args []string) int {
 	var t target
 	t.register(fs)
 	logPath := fs.String("log", "", "the failed command's output")
-	exitCode := fs.Int("exit-code", -1, "the test command's exit code, which aviator-ci exits with; 0 uploads nothing (required)")
+	exitCode := fs.Int("exit-code", -1, "the test command's exit code, which aviator-ci exits with; 0 uploads only the JUnit reports (required)")
+	startedAt := fs.String("started-at", "", "when the test command started, as Unix seconds or RFC 3339; reports older than this are left out (required with --junit)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: aviator-ci upload --check <name> --log <file> --exit-code <code> [flags]\n\n")
 		fs.PrintDefaults()
@@ -105,6 +115,11 @@ func runUpload(args []string) int {
 		fmt.Fprintln(os.Stderr, "aviator-ci: --exit-code is required")
 		return 2
 	}
+	// Without it a previous build's reports count against this commit.
+	if err == nil && len(t.junit) > 0 && *startedAt == "" {
+		fmt.Fprintln(os.Stderr, "aviator-ci: --started-at is required with --junit")
+		return 2
+	}
 	if err != nil {
 		// Still exit with the build's result, so a flag this version doesn't
 		// know can't fail a passing build.
@@ -114,7 +129,14 @@ func runUpload(args []string) int {
 		}
 		return 2
 	}
+	started, err := parseStartedAt(*startedAt)
+	if err != nil {
+		warnf("--started-at: %v; treating the reports as incomplete", err)
+	}
 	if *exitCode == 0 {
+		if len(t.junit) > 0 {
+			send(t, outcome{started: started})
+		}
 		return 0
 	}
 	*exitCode = failureCode(*exitCode)
@@ -126,8 +148,24 @@ func runUpload(args []string) int {
 			warnf("could not read the log: %v", err)
 		}
 	}
-	send(t, log, size)
+	send(t, outcome{log: log, logSize: size, exitCode: *exitCode, started: started})
 	return *exitCode
+}
+
+func parseStartedAt(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if secs, perr := strconv.ParseInt(s, 10, 64); perr == nil {
+		t, err = time.Unix(secs, 0), nil
+	}
+	if err == nil && t.After(time.Now()) {
+		// Milliseconds read as seconds land here, and would make every report
+		// look stale.
+		return time.Time{}, fmt.Errorf("%q is in the future", s)
+	}
+	return t, err
 }
 
 // exitCodeArg finds --exit-code in args that failed to parse.
@@ -161,9 +199,18 @@ func failureCode(code int) int {
 	return code
 }
 
+// outcome is what the test command did.
+type outcome struct {
+	log      []byte
+	logSize  int64
+	exitCode int
+	// When the command started; zero when aviator-ci didn't run it.
+	started time.Time
+}
+
 // send uploads whatever it can and only ever warns, so a problem here never
 // changes the build's result.
-func send(t target, log []byte, logSize int64) {
+func send(t target, r outcome) {
 	if t.check == "" {
 		warnf("--check is required; not uploading")
 		return
@@ -179,26 +226,48 @@ func send(t target, log []byte, logSize int64) {
 		return
 	}
 	var junit []string
+	missing := false
+	seen := map[string]bool{}
 	for _, pattern := range t.junit {
 		paths, err := upload.Glob(pattern)
 		if err != nil {
 			warnf("bad --junit pattern %q: %v", pattern, err)
+			missing = true
 			continue
 		}
-		junit = append(junit, paths...)
+		if len(paths) == 0 {
+			warnf("--junit %q matched no reports", pattern)
+			missing = true
+		}
+		for _, p := range paths {
+			if !seen[p] {
+				seen[p] = true
+				junit = append(junit, p)
+			}
+		}
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), uploadTimeout)
+	timeout := uploadTimeout
+	if r.exitCode == 0 {
+		timeout = passingUploadTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	client := api.New(os.Getenv("AVIATOR_API_HOST"), token, "aviator-ci/"+Version)
-	err = upload.Run(ctx, client, upload.Request{
-		Repo:       build.Repo,
-		Commit:     build.Commit,
-		Check:      t.check,
-		BuildURL:   build.BuildURL,
-		Log:        log,
-		LogSize:    logSize,
-		JUnitPaths: junit,
+	_, err = upload.Run(ctx, client, upload.Request{
+		Repo:         build.Repo,
+		Commit:       build.Commit,
+		Check:        t.check,
+		BuildURL:     build.BuildURL,
+		Branch:       build.Branch,
+		PullRequest:  build.PullRequest,
+		Variant:      t.variant,
+		ExitCode:     r.exitCode,
+		Log:          r.log,
+		LogSize:      r.logSize,
+		JUnitPaths:   junit,
+		JUnitMissing: missing,
+		Since:        r.started,
+		Finished:     time.Now(),
 	}, infof)
 	if err != nil {
 		warnf("upload failed: %v", err)

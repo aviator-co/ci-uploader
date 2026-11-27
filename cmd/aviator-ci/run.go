@@ -51,15 +51,25 @@ func runRun(args []string) int {
 	}
 
 	tail := capture.NewTail(upload.LogTailBytes)
+	// Truncated: some filesystems keep whole seconds, and a report written in
+	// the same second must not read as stale.
+	started := time.Now().Truncate(time.Second)
 	code, stopped := execute(command, tail)
 	if stopped {
 		// The build was cancelled, not failed.
 		warnf("stopped by a signal; not uploading")
 		return code
 	}
-	if code != 0 && canUpload {
+	if !canUpload {
+		return code
+	}
+	switch {
+	case code != 0:
 		log, total := tail.Bytes()
-		send(t, log, total)
+		send(t, outcome{log: log, logSize: total, exitCode: code, started: started})
+	case len(t.junit) > 0:
+		// Passing runs are half of what tells a flaky test from a broken one.
+		send(t, outcome{exitCode: code, started: started})
 	}
 	return code
 }
