@@ -50,8 +50,8 @@ aviator-ci upload --check continuous-integration/jenkins/tests --log out.txt --e
 ```
 
 `--exit-code` is required for `upload`. With `0` only JUnit reports are
-uploaded. Pass `--started-at` with the test command's start time, so reports
-left by an earlier build aren't mistaken for this one's. The
+uploaded. With `--junit`, `--started-at` is required too: the test command's
+start time, so reports left by an earlier build aren't mistaken for this one's. The
 `|| rc=$?` keeps a shell running with `-e`, as Jenkins and GitHub Actions do,
 from stopping before the upload.
 
@@ -62,7 +62,7 @@ from stopping before the upload.
 | `--variant` | Splits a test's history by environment, such as `linux`. At most 128 characters, no `\|`. |
 | `--branch` | The branch under test. Default: from the CI environment, then git. |
 | `--pull-request` | The pull request number in a PR build. Default: from `CHANGE_ID`, `GITHUB_REF`, `BUILDKITE_PULL_REQUEST` or CircleCI. |
-| `--started-at` | `upload` only: when the test command started, as Unix seconds or RFC 3339. |
+| `--started-at` | `upload` only: when the test command started, as Unix seconds or RFC 3339. Required with `--junit`. |
 | `--repo` | `owner/name`. Default: from `GIT_URL`. |
 | `--commit` | Full SHA under test. Default: in a Jenkins PR build, the PR's head (the second parent when Jenkins merged it with its target); else `GIT_COMMIT`, then `git rev-parse HEAD`. Pass it when another CI builds a merge of the PR with its target. |
 | `--build-url` | This build's URL. Default: `BUILD_URL`. |

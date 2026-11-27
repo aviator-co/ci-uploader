@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,8 +21,11 @@ import (
 
 // fakeAviator serves the upload API and the signed URLs it hands out.
 type fakeAviator struct {
-	t        *testing.T
-	skipped  *string
+	t       *testing.T
+	skipped *string
+	// Indexes of the declared files to hand out URLs for; nil for all, with
+	// no index, as an older Aviator does.
+	want     []int
 	refuse   map[int64]bool // PUTs answered 403 without storing
 	mu       sync.Mutex
 	declared api.CreateRequest
@@ -46,7 +50,14 @@ func (f *fakeAviator) handler(srv **httptest.Server) http.Handler {
 		if f.skipped == nil {
 			for i, d := range f.declared.Files {
 				id := int64(100 + i)
-				resp.Files = append(resp.Files, api.Slot{ID: id, Type: d.Type, UploadURL: (*srv).URL + "/put/" + itoa(id)})
+				s := api.Slot{ID: id, Type: d.Type, UploadURL: (*srv).URL + "/put/" + itoa(id)}
+				if f.want != nil {
+					if !slices.Contains(f.want, i) {
+						continue
+					}
+					s.Index = &i
+				}
+				resp.Files = append(resp.Files, s)
 			}
 		}
 		_ = json.NewEncoder(w).Encode(resp)
@@ -309,5 +320,32 @@ func TestRunSendsEachDistinctFailureUpToTheLimit(t *testing.T) {
 	}
 	if result.JUnitComplete {
 		t.Error("going past the limit should make the run incomplete")
+	}
+}
+
+func TestRunUploadsOnlyTheFilesAviatorWants(t *testing.T) {
+	f, client := newFake(t)
+	f.want = []int{1}
+	req := request(t, `<testsuite><testcase classname="a" name="b"/></testsuite>`)
+	req.ExitCode = 1
+	if _, err := Run(t.Context(), client, req, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.stored) != 1 || f.stored[101] == nil {
+		t.Errorf("stored %v, want only the report", f.stored)
+	}
+}
+
+func TestRunSendsTheRunsTimes(t *testing.T) {
+	f, client := newFake(t)
+	req := request(t)
+	req.Since = time.Unix(1700000000, 0)
+	req.Finished = req.Since.Add(time.Minute)
+	if _, err := Run(t.Context(), client, req, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	if f.declared.StartedAt == nil || !f.declared.StartedAt.Equal(req.Since) ||
+		f.declared.FinishedAt == nil || !f.declared.FinishedAt.Equal(req.Finished) {
+		t.Errorf("times %v %v", f.declared.StartedAt, f.declared.FinishedAt)
 	}
 }

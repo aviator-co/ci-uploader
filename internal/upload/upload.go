@@ -54,6 +54,8 @@ type Request struct {
 	// When the test command started. Reports older than this are left out as
 	// stale. Zero when unknown, which leaves the reports incomplete.
 	Since time.Time
+	// When the test command finished.
+	Finished time.Time
 }
 
 // Result is what the reports said and what Aviator answered.
@@ -106,6 +108,9 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) (Resul
 	if len(req.JUnitPaths) > 0 {
 		create.JUnitComplete = &result.JUnitComplete
 	}
+	if !req.Since.IsZero() && !req.Finished.IsZero() {
+		create.StartedAt, create.FinishedAt = &req.Since, &req.Finished
+	}
 	created, err := client.CreateUploads(ctx, create)
 	if err != nil {
 		return result, fmt.Errorf("declaring uploads: %w", err)
@@ -115,19 +120,23 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) (Resul
 		logf("not uploading: %s", *created.Skipped)
 		return result, nil
 	}
-	if len(created.Files) != len(files) {
-		return result, fmt.Errorf("asked for %d upload URLs, got %d", len(files), len(created.Files))
+	slots, err := wanted(created.Files, len(files))
+	if err != nil {
+		return result, err
+	}
+	if len(slots) == 0 {
+		logf("not uploading: Aviator wants none of the files")
+		return result, nil
 	}
 
-	// Slots come back in the order the files were declared.
-	byID := make(map[int64]int, len(files))
-	ids := make([]int64, len(files))
-	for i, slot := range created.Files {
-		byID[slot.ID] = i
-		ids[i] = slot.ID
+	byID := make(map[int64]slot, len(slots))
+	ids := make([]int64, len(slots))
+	for i, s := range slots {
+		byID[s.ID] = s
+		ids[i] = s.ID
 	}
-	put := func(i int) error {
-		err := client.Put(ctx, created.Files[i].UploadURL, created.ContentType, files[i].gz)
+	put := func(s slot) error {
+		err := client.Put(ctx, s.UploadURL, created.ContentType, files[s.file].gz)
 		// Storage is write-once, so a retried PUT whose first attempt landed is
 		// refused; /complete tells us whether it's there.
 		var apiErr *api.Error
@@ -136,9 +145,9 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) (Resul
 		}
 		return err
 	}
-	for i := range files {
-		if err := put(i); err != nil {
-			logf("could not upload %s: %v", files[i].name, err)
+	for _, s := range slots {
+		if err := put(s); err != nil {
+			logf("could not upload %s: %v", files[s.file].name, err)
 		}
 	}
 
@@ -157,7 +166,7 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) (Resul
 	if len(done.Missing) > 0 {
 		for _, id := range done.Missing {
 			if err := put(byID[id]); err != nil {
-				logf("could not upload %s: %v", files[byID[id]].name, err)
+				logf("could not upload %s: %v", files[byID[id].file].name, err)
 			}
 		}
 		if done, err = confirm(done.Missing); err != nil {
@@ -165,15 +174,40 @@ func Run(ctx context.Context, client *api.Client, req Request, logf Logf) (Resul
 		}
 	}
 	for _, id := range done.Missing {
-		logf("%s did not upload", files[byID[id]].name)
+		logf("%s did not upload", files[byID[id].file].name)
 	}
 	for _, id := range done.Rejected {
-		logf("%s was rejected for its size", files[byID[id]].name)
+		logf("%s was rejected for its size", files[byID[id].file].name)
 	}
 	if n := len(done.Uploaded); n > 0 {
 		logf("uploaded %d file(s) for %q", n, req.Check)
 	}
 	return result, nil
+}
+
+// slot is an upload URL and the file it's for.
+type slot struct {
+	api.Slot
+	file int
+}
+
+// wanted pairs each URL with its file. An older Aviator sends no index and a
+// URL for every file, in order.
+func wanted(slots []api.Slot, files int) ([]slot, error) {
+	out := make([]slot, len(slots))
+	for i, s := range slots {
+		file := i
+		if s.Index != nil {
+			file = *s.Index
+		} else if len(slots) != files {
+			return nil, fmt.Errorf("asked for %d upload URLs, got %d", files, len(slots))
+		}
+		if file < 0 || file >= files {
+			return nil, fmt.Errorf("upload URL for file %d of %d", file, files)
+		}
+		out[i] = slot{Slot: s, file: file}
+	}
+	return out, nil
 }
 
 func prepare(req Request, logf Logf) ([]file, Result, error) {

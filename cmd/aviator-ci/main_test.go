@@ -16,6 +16,7 @@ func TestUploadKeepsExitCodeOnBadFlags(t *testing.T) {
 		{[]string{"upload", "--check", "x", "--log", "out.txt"}, 2},
 		{[]string{"upload", "--newer-flag", "--exit-code=-1"}, 1},
 		{[]string{"upload", "--exit-code", "-3"}, 1},
+		{[]string{"upload", "--check", "x", "--exit-code", "0", "--junit", "r.xml"}, 2},
 	} {
 		if got := run(tc.args); got != tc.want {
 			t.Errorf("run(%q) = %d, want %d", tc.args, got, tc.want)

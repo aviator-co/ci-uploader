@@ -41,12 +41,19 @@ type CreateRequest struct {
 	PullRequestNumber int    `json:"pull_request_number,omitempty"`
 	Variant           string `json:"variant,omitempty"`
 	ExitCode          *int   `json:"exit_code,omitempty"`
+	// When the test command started and finished, so Aviator pairs a retry
+	// only with a run that finished before it started.
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	// Whether every report parsed and was written by this run.
 	JUnitComplete *bool           `json:"junit_complete,omitempty"`
 	FailedTests   []junit.Failure `json:"failed_tests,omitempty"`
 }
 
 type Slot struct {
+	// The declared file's position. Aviator only hands out URLs for the files
+	// it will read.
+	Index     *int     `json:"index"`
 	ID        int64    `json:"id"`
 	Type      FileType `json:"type"`
 	UploadURL string   `json:"upload_url"`

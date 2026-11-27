@@ -94,7 +94,7 @@ func runUpload(args []string) int {
 	t.register(fs)
 	logPath := fs.String("log", "", "the failed command's output")
 	exitCode := fs.Int("exit-code", -1, "the test command's exit code, which aviator-ci exits with; 0 uploads only the JUnit reports (required)")
-	startedAt := fs.String("started-at", "", "when the test command started, as Unix seconds or RFC 3339; reports older than this are left out, and without it the reports count as incomplete")
+	startedAt := fs.String("started-at", "", "when the test command started, as Unix seconds or RFC 3339; reports older than this are left out (required with --junit)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: aviator-ci upload --check <name> --log <file> --exit-code <code> [flags]\n\n")
 		fs.PrintDefaults()
@@ -113,6 +113,11 @@ func runUpload(args []string) int {
 	fs.Visit(func(f *flag.Flag) { given = given || f.Name == "exit-code" })
 	if err == nil && !given {
 		fmt.Fprintln(os.Stderr, "aviator-ci: --exit-code is required")
+		return 2
+	}
+	// Without it a previous build's reports count against this commit.
+	if err == nil && len(t.junit) > 0 && *startedAt == "" {
+		fmt.Fprintln(os.Stderr, "aviator-ci: --started-at is required with --junit")
 		return 2
 	}
 	if err != nil {
@@ -262,6 +267,7 @@ func send(t target, r outcome) {
 		JUnitPaths:   junit,
 		JUnitMissing: missing,
 		Since:        r.started,
+		Finished:     time.Now(),
 	}, infof)
 	if err != nil {
 		warnf("upload failed: %v", err)
